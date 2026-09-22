@@ -24,10 +24,12 @@ import csv
 import statistics
 import sys
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import openpyxl
 
-from validation import certify_operations, known_scanner_prefixes
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/
+from common.validation import certify_operations, known_scanner_prefixes
 
 
 def load_sheet(wb, name):
@@ -74,6 +76,10 @@ def build_op_record(row, idx):
         "notas": row[idx["NOTAS"]] or "",
         "duracion": row[idx["DURACION"]],
         "score": f(row, idx, "SCORE_ENTRADA"),
+        "tamano_pos": f(row, idx, "TAMAÑO_POS"),
+        "comision_usd": f(row, idx, "COMISION_USD"),
+        "slippage_pct": f(row, idx, "SLIPPAGE_PCT"),
+        "broker": row[idx["BROKER"]] or "",
     }
 
 
@@ -176,7 +182,8 @@ def export_certified(path, ops):
     if not ops:
         return
     fields = ["op_id", "ticker", "mercado", "scn_ref", "fecha", "hora_entrada",
-              "hora_salida", "entrada", "salida", "result_pct", "rr", "resultado", "score"]
+              "hora_salida", "entrada", "salida", "result_pct", "rr", "resultado", "score",
+              "duracion", "tamano_pos", "comision_usd", "slippage_pct", "broker", "notas"]
     with open(path, "w", newline="") as f_out:
         w = csv.DictWriter(f_out, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
