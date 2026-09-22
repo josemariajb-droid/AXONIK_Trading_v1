@@ -1,0 +1,4 @@
+# Sin dependencias nuevas todavía: los gates B/C/D/ablation/permutación
+# son interfaces sin implementar (ver gates.py). Cuando se implementen,
+# necesitarán numpy/scipy (tests estadísticos) y probablemente
+# scikit-learn o mlfinlab-style utilities para CPCV/PBO (Gate D).
