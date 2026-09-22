@@ -89,6 +89,51 @@ filtre por una columna estructurada (`COUNTIF(VALIDACION_ESTADO,"CERTIFICADA")`)
 en vez de mantener su propia lógica de exclusión — cerrando el hueco que
 la auditoría de Fase 0A encontró en las fórmulas actuales.
 
+## Prueba de verificación obligatoria antes de dar la fuga por cerrada
+
+Desplegar el nodo Redis no es el criterio de cierre — el criterio es que
+bloquee de verdad el caso exacto que rompió ST-16: un reenvío del mismo
+lote con payload idéntico. Sin esta prueba, "está desplegado" y "está
+arreglado" son afirmaciones distintas.
+
+**Protocolo:**
+
+1. **Aislar el test.** Usar un ticker y `SCN_ID_REF` obviamente sintéticos
+   (p.ej. `ticker=ZZTEST`, `scn_id_ref=ST-16`, `fecha=hoy`) para que la fila
+   de prueba sea trivial de identificar y borrar después — no reutilizar un
+   scanner real con datos reales para no contaminar el track record.
+2. **Reproducir el mecanismo del bug, no solo el síntoma.** El bug
+   original no fue "dos filas con 11h30 de diferencia" por sí solo — fue
+   "el mismo payload de entrada procesado dos veces". Ejecutar el
+   workflow (o el nodo que llega hasta el punto de escritura) dos veces
+   seguidas con el mismo payload de prueba (mismo ticker+scn_id+fecha+
+   precio_entrada), vía "Execute Node"/"Execute Workflow" con input
+   fijado en n8n. No hace falta esperar 11h30 — la clave de idempotencia
+   no depende del tiempo transcurrido.
+3. **Verificar los tres efectos esperados:**
+   - En `05_OPERACIONES`: **una sola fila** para ese payload de prueba
+     (no dos).
+   - El segundo intento queda registrado como suprimido (rama
+     `REENVIO_SUPRIMIDO` del diseño de arriba), no silenciosamente
+     descartado sin rastro.
+   - En Redis: `GET idempotency:op:ST-16:ZZTEST:<fecha>:<precio_entrada>`
+     devuelve el valor esperado, y `TTL` de esa clave está cerca de
+     5184000s (60 días), no vacío ni infinito.
+4. **Negativo de control (opcional pero recomendado):** repetir el mismo
+   procedimiento con un payload de prueba que cambie un solo campo de la
+   clave (p.ej. `precio_entrada` distinto) y confirmar que **sí** se
+   escriben dos filas — si el fix también bloqueara esto, la clave está
+   mal diseñada (demasiado agresiva) y bloquearía señales legítimas
+   distintas que coinciden en fecha/ticker/scanner.
+5. **Limpieza.** Borrar la fila de prueba de `05_OPERACIONES` y la clave
+   de Redis de prueba al terminar.
+6. **Registro.** Documentar el resultado (pass/fail de cada paso, IDs de
+   ejecución de n8n) como addendum a este mismo archivo, y solo entonces
+   cambiar el encabezado de este documento de `DISEÑO — no desplegado` a
+   `DESPLEGADO Y VERIFICADO (fecha)`. Sin ese cambio de estado explícito,
+   cualquier lectura posterior de este documento debe asumir que la fuga
+   sigue abierta.
+
 ## Bloqueo de acceso — qué falta para aplicar esto de verdad
 
 Esta sesión no tiene una conexión autorizada al servidor Hetzner ni al
@@ -106,12 +151,21 @@ arriba asume que no la tiene, basado únicamente en la evidencia indirecta
 del bug reproducido (si existiera protección real, el bug no habría
 ocurrido). Para aplicar el fix hace falta una de estas tres rutas:
 
-1. El usuario añade una regla de permiso en `settings.json`/`settings.local.json`
-   que autorice llamadas de red a `n8n.axonikai.com` desde esta sesión (skill
-   `update-config` puede montarla), y se repite el intento de conexión.
-2. El usuario abre una sesión de Claude Code con el entorno Hetzner ya
-   conectado (`list_environments`/`create_session`) y se le pasa este
-   documento + `services/validation-api/` como contexto de partida.
+1. ~~El usuario añade una regla de permiso en `settings.json`/`settings.local.json`~~
+   — descartada deliberadamente: ensancharía el acceso de esta sesión a
+   credenciales de producción de forma permanente por un caso puntual.
+2. **Ruta elegida.** El usuario (o quien tenga acceso) se conecta por SSH
+   al Hetzner (`89.167.80.58`) y ejecuta ahí el `claude` ya instalado
+   localmente en esa máquina (`AXONIK_Master_Context_v1.md` §5: "Claude
+   Code: instalado y verificado"). **Precisión importante:** `list_environments`
+   desde esta sesión solo devuelve dos entornos cloud genéricos
+   ("Default — trusted network access"), ninguno vinculado al Hetzner —
+   esa instalación es una CLI local en la propia máquina, no un entorno
+   de este fleet remoto, así que no se puede lanzar ni mensajear desde
+   aquí (`ListAgents` no la ve). Handoff: pasar a esa sesión este
+   documento completo (diseño + protocolo de verificación de arriba) como
+   contexto inicial — el patch de nodos y el checklist de verificación ya
+   están completos, esa sesión solo necesita aplicarlos.
 3. El usuario exporta manualmente el workflow (`n8n → Workflows → el que
    escribe en 05_OPERACIONES → Download`), lo pega o sube aquí, y se aplica
    el patch sobre ese JSON en este repo antes de reimportarlo.
