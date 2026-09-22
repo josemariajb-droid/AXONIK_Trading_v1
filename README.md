@@ -11,7 +11,12 @@ pipelines de ingesta cualitativa).
   decisiones). Ver `2026-09-22_auditoria_tarea0.md` para la auditoría base
   de scanners/operaciones previa a QFEL-Cripto y Camino C.
 - `scripts/audit/` — scripts reproducibles de auditoría sobre exports del
-  Decision Engine v2.
+  Decision Engine v2. `validation.py` es la única fuente de verdad sobre
+  qué operaciones de `05_OPERACIONES` son válidas para métricas agregadas
+  (dashboard, reports, PF/WR, gates de Fase 0B en adelante) — cualquier
+  código nuevo que necesite "operaciones válidas" importa
+  `is_valid_operation` / `certify_operations` de ahí, no reimplementa el
+  filtro.
 
 ## Principio rector
 
