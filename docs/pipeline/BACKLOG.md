@@ -33,7 +33,13 @@ Abreviatura usada: **DOC-IDEM** =
   despliegue y una verificación que fuerce dos ejecuciones simultáneas con un
   snapshot pendiente de prueba y compruebe que se escribe 1 sola fila.
 
-### 2. [BAJA] Puerto 8002 (`market_data_proxy.py`) sin autenticación y con CORS abierto
+### 2. [ALTA] Puerto 8002 (`market_data_proxy.py`) sin autenticación y con CORS abierto
+
+> Prioridad subida de BAJA a ALTA el 03/10/2026: el diseño de
+> `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` añade un
+> proceso automático nuevo que llama a este proxy sin supervisión humana en
+> cada ejecución — no tiene sentido construir más automatización sobre un
+> endpoint que hoy solo protege el firewall.
 
 - **Descripción:** el proxy (FastAPI con uvicorn, como root, unit
   `axonik-market-proxy`) escucha en `0.0.0.0:8002` sin autenticación en ningún
@@ -47,7 +53,9 @@ Abreviatura usada: **DOC-IDEM** =
 - **Hallazgo original:** DOC-IDEM, "Hallazgo 4 — `market_data_proxy`
   expuesto en `0.0.0.0:8002` sin autenticación", más la "Comprobación previa
   al despliegue" del Addendum 3.
-- **Estado:** INFORME, no corregido.
+- **Estado:** DISEÑO (antes INFORME) — diseño de autenticación mínima en
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` §3, sin
+  desplegar.
 - **Para cerrarlo:** añadir autenticación real en el servicio, no depender solo
   del firewall. Como mínimo, los endpoints de escritura deben exigir un token
   y el frontend `/scanner` debe enviarlo. Además, restringir el CORS al
@@ -101,6 +109,28 @@ Abreviatura usada: **DOC-IDEM** =
 - **Para cerrarlo:** diseño, revisión y despliegue. La verificación consiste
   en simular un fallo tras un append correcto y comprobar que el reintento no
   duplica la fila.
+
+### 5. [MEDIA] Automatizar `autoCaptureSnapshots()` (reemplazar la dependencia del navegador)
+
+- **Descripción:** la captura de snapshots depende hoy de tener el scanner
+  HTML abierto con auto-refresh en el navegador. Diseño de automatización
+  headless (timer systemd, ventana 16:00-18:00 Madrid L-V) en
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md`. Bloqueado
+  por una pregunta sin confirmar: si `detectAutoTrigger()` y el universo de
+  tickers que evalúa `runScan()` dependen de algo calculado solo en el
+  navegador, haría falta Playwright en vez de un script Python simple — ver
+  §1.2 de ese documento.
+- **Hallazgo original:** este documento (03/10/2026), a partir de la
+  investigación ya existente en DOC-IDEM Addendum 2 §1.2.
+- **Estado:** DISEÑO, no implementado. Depende también de que la entrada 2
+  de este backlog (autenticación del proxy) tenga al menos una mitigación
+  mínima antes de desplegarse — no construir más automatización sobre un
+  endpoint abierto.
+- **Para cerrarlo:** (1) extraer el código real de `autoCaptureSnapshots`/
+  `detectAutoTrigger`/`runScan` para confirmar que es replicable sin
+  navegador; (2) implementar `snapshot_autocapture.py` + unit systemd; (3)
+  desplegar y verificar que respeta la ventana operativa y que no captura
+  nada fuera de ella ni con un arranque manual del servicio.
 
 ## Cerrados
 
