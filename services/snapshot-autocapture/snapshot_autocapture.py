@@ -11,35 +11,59 @@ NYSE_STRATEGIES/CRYPTO_STRATEGIES/applyEventAdjustments/tickerHardNo son
 aritmética pura sobre datos, sin dependencia de navegador:
 docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md (§1, cerrado).
 
-ANTES DE ACTIVAR EL TIMER EN PRODUCCIÓN — tres puntos siguen siendo la
-mejor estimación a partir de la documentación existente, NO una lectura
-literal del código, y hay que cerrarlos con la misma disciplina que el
-resto de este diseño (ver docs/pipeline/check_autocapture_triggers.sh,
-sección "Pregunta 4"):
+ESTADO TRAS LA PREGUNTA 4 (confirmado contra el código real, no prosa):
 
-  1. El shape exacto de la petición/respuesta de POST /api/scan-batch
-     (función fetch_scan_batch) — se asume aquí el mismo contrato que
-     usa runScan() en el navegador, a falta de leer el handler completo.
-  2. Los nombres de campo entry_price/stop_price/risk_pct en el payload
-     de POST /api/snapshots (función construir_payload_snapshot).
-     ticker/market/strategies/data_ts/snapshot_ts/temporal_group SÍ
-     están confirmados (DOC-IDEM Addendum 3, patch literal de
-     create_snapshot, y Addendum 4, payload de prueba real).
-  3. El umbral numérico real de detectAutoTrigger() (función
-     detect_auto_trigger) — confirmado que es una comparación pura,
-     pero el valor exacto del umbral no se ha transcrito a ningún
-     documento. 80.0 es una estimación a partir de los SCORE_ENTRADA
-     observados en 05_OPERACIONES (Fase 0A: 82, 95, 100...).
+  - fetch_scan_batch(): CORREGIDO. Shape real: {"results": [{"ticker",
+    "timestamp", "data", "error"?}]}. "data" son indicadores EN BRUTO,
+    no un score precalculado — la asunción anterior de este script
+    (`ticker_data.get("score")`) era sencillamente incorrecta, no una
+    aproximación válida. Los errores por-ticker vienen dentro del array
+    ("error" por entrada), no como fallo global del batch — manejado
+    en el bucle principal, no como excepción.
 
-Protocolo antes de instalar el timer:
-  1. Cerrar los tres puntos de arriba.
-  2. Ejecutar con --dry-run contra el proxy real y revisar el log —
-     no hace ningún POST, solo registra qué habría enviado.
-  3. Ejecutar una vez sin --dry-run con --force-window fuera de la
-     franja de los timers del evaluador (16:00-22:00 L-V, 18:30 todos
-     los días), usando un scanner/ticker de prueba igual que en el
-     protocolo de ST-16 (ZZTEST), y confirmar la respuesta antes de
-     instalar axonik-snapshot-autocapture.timer.
+  - construir_payload_snapshot(): CORREGIDO. El campo real es
+    risk_per_share, no risk_pct (confirmado contra SnapshotCreateRequest
+    literal). entry_price/stop_price sí coincidían.
+
+  - detect_auto_trigger(): CORREGIDO de un único umbral a las dos ramas
+    reales — ver evaluate_auto_trigger() más abajo:
+      AUTO_HIGH:  una sola estrategia con score >= 90 dispara por sí sola.
+      AUTO_MULTI: >=2 estrategias del MISMO GRUPO con score >= 80 cada una
+                  disparan juntas.
+    "Mismo grupo" se interpreta aquí como mismo temporal_group (swing/
+    intraday/medio) — es una LECTURA de la prosa del usuario sobre
+    detectAutoTrigger(), no una cita literal de esa función. Dado que ya
+    hubo un fallo real por fiarse de una paráfrasis (risk_pct vs.
+    risk_per_share), esto debería confirmarse contra el código real antes
+    de fiarse de esta agrupación en producción.
+
+GAP REAL DESCUBIERTO AL CORREGIR LO ANTERIOR — no uno de los tres puntos
+pedidos, pero lo que los tres puntos, juntos, dejan al descubierto:
+
+  El cálculo del score en sí (evaluateTicker() + NYSE_STRATEGIES +
+  CRYPTO_STRATEGIES + applyEventAdjustments + tickerHardNo) NUNCA se portó
+  a Python. Solo se confirmó que esas cinco piezas son "limpias" (sin
+  document./window./canvas/fetch interno) — nunca se transcribió su
+  CONTENIDO. Este script dependía de que /api/scan-batch devolviera un
+  "score" ya calculado; el shape real confirmado demuestra que no es así.
+
+  Por eso evaluate_ticker() de abajo es un NotImplementedError explícito,
+  no un valor por defecto razonable ni una aproximación. No se inventa
+  esa lógica aquí. Para cerrarlo de verdad hacen falta los CUERPOS
+  LITERALES de las cinco piezas (no un resumen en prosa — la lección de
+  risk_per_share es exactamente esa: una paráfrasis ya introdujo un error
+  real). Hasta que eso se porte, este script no puede ejecutarse en
+  producción — fallará de forma ruidosa e inmediata en el primer ticker,
+  a propósito, en vez de fingir un resultado.
+
+Protocolo antes de instalar el timer (no aplicable todavía, ver el gap de
+arriba):
+  1. Portar evaluate_ticker() con los cuerpos literales de las 5 piezas.
+  2. Confirmar la agrupación real de AUTO_MULTI ("mismo grupo").
+  3. Ejecutar con --dry-run contra el proxy real y revisar el log.
+  4. Ejecutar una vez sin --dry-run con --force-window fuera de la franja
+     de los timers del evaluador, con un ticker de prueba (ZZTEST), y
+     confirmar la respuesta antes de instalar el timer.
 """
 from __future__ import annotations
 
@@ -77,7 +101,11 @@ OPERATING_WEEKDAYS = {0, 1, 2, 3, 4}  # datetime.weekday(): lunes=0 ... viernes=
 EXCLUDED_MARKETS = {"CRYPTO"}
 
 LOG_PATH = Path(os.environ.get("AXONIK_AUTOCAPTURE_LOG", "/var/log/axonik/snapshot_autocapture.log"))
-DEFAULT_SCORE_THRESHOLD = 80.0  # ver punto 3 de la cabecera — estimación, no confirmado
+
+# Confirmados contra el código real (no estimación): dos ramas, no un umbral único.
+AUTO_HIGH_THRESHOLD = 90.0
+AUTO_MULTI_THRESHOLD = 80.0
+AUTO_MULTI_MIN_COUNT = 2
 
 
 def _setup_logging() -> logging.Logger:
@@ -103,6 +131,21 @@ class ScannerDef:
     mercado: str
     estado: str
     tipo_op: str
+
+
+@dataclass(frozen=True)
+class TickerEvaluation:
+    """
+    Lo que evaluateTicker() produce para un (ticker, scanner) concreto —
+    todo lo que autoCaptureSnapshots() necesitaba para decidir y para
+    construir el payload de captura.
+    """
+    scn_id: str
+    score: float
+    temporal_group: str
+    entry_price: float
+    stop_price: float
+    risk_per_share: float
 
 
 def within_operating_window(now_madrid: datetime) -> bool:
@@ -149,11 +192,10 @@ def cargar_universo_de_scanners() -> list[ScannerDef]:
 
 def fetch_scan_batch(scanners: list[ScannerDef]) -> dict:
     """
-    PENDIENTE DE CONFIRMAR (punto 1 de la cabecera del archivo): shape
-    exacto de /api/scan-batch. Se asume que acepta una lista de IDs de
-    scanner y devuelve {"results": [...]} con al menos ticker/score/
-    data_ts/scn_id por entrada — es la forma mínima que necesita el
-    resto del script, no una transcripción del handler real.
+    CORREGIDO (Pregunta 4): shape real {"results": [{"ticker",
+    "timestamp", "data", "error"?}]}. El manejo de "error" por-entrada es
+    responsabilidad del llamador (main()), no de esta función — un error
+    en un ticker no es un fallo del batch completo.
     """
     resp = requests.post(
         f"{PROXY_BASE}/api/scan-batch",
@@ -164,41 +206,89 @@ def fetch_scan_batch(scanners: list[ScannerDef]) -> dict:
     return resp.json()
 
 
-def detect_auto_trigger(score: float, threshold: float = DEFAULT_SCORE_THRESHOLD) -> bool:
+def evaluate_ticker(ticker: str, data: dict, scanner: ScannerDef) -> TickerEvaluation:
     """
-    Confirmado (diseño §1.2-1.4): detectAutoTrigger() es comparación
-    pura. El umbral exacto (punto 3 de la cabecera) sigue siendo una
-    estimación — confirmarlo antes de depender de este valor en real.
+    NO IMPLEMENTADO — GAP REAL, no un valor por defecto.
+
+    Puerto de evaluateTicker() + NYSE_STRATEGIES/CRYPTO_STRATEGIES (según
+    scanner.mercado) + applyEventAdjustments + tickerHardNo, para UN
+    (ticker, scanner) concreto. Solo se confirmó que esas cinco piezas son
+    aritmética/orquestación pura sobre `data` (sin navegador) — nunca se
+    transcribió su contenido real.
+
+    Para implementar esto de verdad: pegar aquí los cuerpos LITERALES de
+    las cinco piezas (no un resumen en prosa — la paráfrasis de
+    risk_pct/risk_per_share ya introdujo un error real una vez).
     """
-    return score >= threshold
+    raise NotImplementedError(
+        f"evaluate_ticker({ticker!r}, scanner={scanner.scn_id!r}): falta portar "
+        f"evaluateTicker()/NYSE_STRATEGIES/CRYPTO_STRATEGIES/applyEventAdjustments/"
+        f"tickerHardNo. Ver docstring y cabecera del archivo."
+    )
 
 
-def construir_payload_snapshot(ticker_data: dict, scanner: ScannerDef,
+def evaluate_auto_trigger(evaluations: dict[str, TickerEvaluation]) -> list[str]:
+    """
+    Puerto de detectAutoTrigger() — dos ramas confirmadas contra el
+    código real (no un único umbral, como se asumía antes de la
+    Pregunta 4):
+
+      AUTO_HIGH:  cualquier estrategia individual con score >= 90
+                  dispara por sí sola.
+      AUTO_MULTI: >=2 estrategias del MISMO GRUPO (aquí: mismo
+                  temporal_group — ver nota de "mismo grupo" en la
+                  cabecera del archivo, es una lectura, no una cita
+                  literal) con score >= 80 cada una disparan juntas.
+
+    Devuelve la lista de scn_id que disparan (vacía si no dispara nada).
+    Una estrategia puede aparecer por ambas ramas a la vez sin problema —
+    se deduplica.
+    """
+    triggered: set[str] = set()
+
+    for scn_id, ev in evaluations.items():
+        if ev.score >= AUTO_HIGH_THRESHOLD:
+            triggered.add(scn_id)
+
+    by_group: dict[str, list[str]] = {}
+    for scn_id, ev in evaluations.items():
+        if ev.score >= AUTO_MULTI_THRESHOLD:
+            by_group.setdefault(ev.temporal_group, []).append(scn_id)
+    for scn_ids in by_group.values():
+        if len(scn_ids) >= AUTO_MULTI_MIN_COUNT:
+            triggered.update(scn_ids)
+
+    return sorted(triggered)
+
+
+def construir_payload_snapshot(ticker: str, primary: TickerEvaluation,
+                                triggered_scn_ids: list[str], market: str,
                                 data_ts: str, snapshot_ts: str) -> dict:
     """
     ticker/market/strategies/data_ts/snapshot_ts/temporal_group:
-    CONFIRMADOS (DOC-IDEM Addendum 3 y Addendum 4). entry_price/
-    stop_price/risk_pct: PENDIENTE DE CONFIRMAR (punto 2 de la
-    cabecera) — nombres estimados a partir de la prosa de Addendum 4
-    ("entry 100 / stop 95 / risk 5"), no de una lectura literal del
-    modelo Pydantic.
+    CONFIRMADOS (DOC-IDEM Addendum 3 y 4). entry_price/stop_price:
+    CONFIRMADOS contra SnapshotCreateRequest (Pregunta 4). risk_per_share:
+    CORREGIDO — el campo real no es risk_pct.
+
+    `primary` son los datos de entry/stop/risk de la primera estrategia
+    disparada; asume que son iguales entre todas las estrategias
+    disparadas sobre el mismo ticker/vela — sin confirmar explícitamente,
+    pendiente junto con evaluate_ticker().
     """
     return {
-        "ticker": ticker_data["ticker"],
-        "market": scanner.mercado.lower(),
+        "ticker": ticker,
+        "market": market.lower(),
         "data_ts": data_ts,
         "snapshot_ts": snapshot_ts,
-        "temporal_group": ticker_data.get("temporal_group", "swing"),
-        "strategies": [{"id": scanner.scn_id}],
-        "entry_price": ticker_data["entry_price"],
-        "stop_price": ticker_data["stop_price"],
-        "risk_pct": ticker_data.get("risk_pct"),
+        "temporal_group": primary.temporal_group,
+        "strategies": [{"id": scn_id} for scn_id in triggered_scn_ids],
+        "entry_price": primary.entry_price,
+        "stop_price": primary.stop_price,
+        "risk_per_share": primary.risk_per_share,
     }
 
 
-def capture_signal(scanner: ScannerDef, ticker_data: dict, data_ts: str,
-                    snapshot_ts: str, dry_run: bool) -> bool:
-    payload = construir_payload_snapshot(ticker_data, scanner, data_ts, snapshot_ts)
+def capture_signal(payload: dict, dry_run: bool) -> bool:
     if dry_run:
         log.info(f"[DRY RUN] POST /api/snapshots {json.dumps(payload, ensure_ascii=False)}")
         return False
@@ -208,7 +298,7 @@ def capture_signal(scanner: ScannerDef, ticker_data: dict, data_ts: str,
     body = resp.json()
     created = bool(body.get("created"))
     if created:
-        log.info(f"capturado: {ticker_data['ticker']} / {scanner.scn_id} (id={body.get('id')})")
+        log.info(f"capturado: {payload['ticker']} / {payload['strategies']} (id={body.get('id')})")
     # created:false ya queda registrado por el propio proxy
     # ("snapshot duplicado suprimido", Hallazgo 1 de DOC-IDEM) — no duplicar ese log aquí.
     return created
@@ -251,25 +341,40 @@ def main() -> int:
         log.exception("Fallo al llamar a /api/scan-batch.")
         return 1
 
+    snapshot_ts = now.astimezone(ZoneInfo("UTC")).isoformat()
     capturas = 0
-    for ticker_data in datos_mercado.get("results", []):
-        score = ticker_data.get("score")
-        if score is None or not detect_auto_trigger(score):
+
+    for item in datos_mercado.get("results", []):
+        ticker = item.get("ticker")
+        if item.get("error"):
+            log.warning(f"scan-batch devolvió error para {ticker}: {item['error']} — se omite "
+                        f"(no es un fallo del batch completo).")
             continue
-        scanner = next((s for s in scanners if s.scn_id == ticker_data.get("scn_id")), None)
-        if scanner is None:
+
+        data = item.get("data") or {}
+        # evaluate_ticker() lanza NotImplementedError a propósito — ver
+        # cabecera del archivo. No se captura aquí: debe fallar ruidoso,
+        # no silenciarse ticker a ticker.
+        evaluations = {
+            scanner.scn_id: evaluate_ticker(ticker, data, scanner)
+            for scanner in scanners
+        }
+
+        triggered = evaluate_auto_trigger(evaluations)
+        if not triggered:
             continue
+
+        primary = evaluations[triggered[0]]
+        scanner_mercado = next(s.mercado for s in scanners if s.scn_id == triggered[0])
+        payload = construir_payload_snapshot(
+            ticker, primary, triggered, market=scanner_mercado,
+            data_ts=item.get("timestamp"), snapshot_ts=snapshot_ts,
+        )
         try:
-            if capture_signal(
-                scanner, ticker_data,
-                data_ts=ticker_data["data_ts"],
-                snapshot_ts=now.astimezone(ZoneInfo("UTC")).isoformat(),
-                dry_run=args.dry_run,
-            ):
+            if capture_signal(payload, dry_run=args.dry_run):
                 capturas += 1
         except Exception:
-            log.exception(f"Fallo al capturar {ticker_data.get('ticker')} / {scanner.scn_id} "
-                           f"— se sigue con el resto del lote.")
+            log.exception(f"Fallo al capturar {ticker} / {triggered} — se sigue con el resto del lote.")
 
     log.info(f"Fin de la corrida. Señales capturadas: {capturas}.")
     return 0

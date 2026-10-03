@@ -121,21 +121,28 @@ Abreviatura usada: **DOC-IDEM** =
   `services/snapshot-autocapture/`.
 - **Hallazgo original:** este documento (03/10/2026), a partir de la
   investigación ya existente en DOC-IDEM Addendum 2 §1.2.
-- **Estado:** IMPLEMENTADO (código real), NO DESPLEGADO. Bloqueante de
-  Playwright cerrado (`detectAutoTrigger`/`evaluateTicker`/
-  `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`/`applyEventAdjustments`/
-  `tickerHardNo`, todos confirmados como aritmética/orquestación pura sin
-  DOM). Depende de la entrada 2 de este backlog: se resuelve con bind a
-  `127.0.0.1` en vez de token, patch listo en
-  `services/snapshot-autocapture/README.md`, no aplicado.
-- **Para cerrarlo:** (1) confirmar con la Pregunta 4 de
-  `check_autocapture_triggers.sh` el shape de `scan-batch` y los nombres
-  de campo `entry_price`/`stop_price`/`risk_pct` de `/api/snapshots`
-  (hoy estimados, no leídos literalmente); (2) aplicar el bind a
-  `127.0.0.1`; (3) desplegar el script y las units siguiendo el
-  protocolo de verificación del README (`--dry-run`, luego una corrida
-  real fuera de la franja de los timers del evaluador) antes de habilitar
-  el timer.
+- **Estado:** IMPLEMENTADO (parcial), NO DESPLEGADO, BLOQUEADO por un gap
+  real. Bloqueante de Playwright cerrado (`detectAutoTrigger`/
+  `evaluateTicker`/`NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`/
+  `applyEventAdjustments`/`tickerHardNo`, confirmados como aritmética/
+  orquestación pura sin DOM — pero solo confirmado que son "limpias", no
+  su contenido). Pregunta 4 ejecutada contra el código real: 2 de 3
+  puntos estimados se corrigieron (`risk_pct` → `risk_per_share` — era
+  un error real, no solo una estimación sin confirmar; umbral único →
+  dos ramas `AUTO_HIGH`/`AUTO_MULTI`), pero reveló que el cálculo del
+  score en sí nunca se portó — `/api/scan-batch` devuelve indicadores en
+  bruto, no un score precalculado como asumía el script.
+  `evaluate_ticker()` es ahora un `NotImplementedError` explícito.
+  Depende también de la entrada 2 de este backlog (bind a `127.0.0.1`,
+  patch listo, no aplicado).
+- **Para cerrarlo:** (1) portar `evaluate_ticker()` con los cuerpos
+  LITERALES de las cinco piezas (no un resumen en prosa — ya hubo un
+  error real por eso); (2) confirmar si "mismo grupo" en `AUTO_MULTI` es
+  de verdad `temporal_group` (lectura actual, no cita literal); (3)
+  aplicar el bind a `127.0.0.1`; (4) desplegar y verificar siguiendo el
+  protocolo del README (`--dry-run`, luego una corrida real con ZZTEST
+  fuera de la franja de los timers del evaluador) antes de habilitar el
+  timer.
 
 ## Cerrados
 

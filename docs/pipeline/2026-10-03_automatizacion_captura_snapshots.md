@@ -124,32 +124,52 @@ Playwright?" cerrado del todo:** `evaluateTicker()` y todo lo que llama es
 aritmética/orquestación pura sobre datos — un script Python sin navegador
 es viable.
 
-### 1.5 Implementación real entregada
+### 1.5 Implementación real entregada — Pregunta 4 ejecutada, 3 puntos corregidos, 1 gap real descubierto
 
-`services/snapshot-autocapture/`: `snapshot_autocapture.py` (código real,
-no pseudocódigo — ver esqueleto de §2.5 más abajo, ya superado),
-`axonik-snapshot-autocapture.service`/`.timer`, y `README.md` con el
-despliegue paso a paso. **No desplegado** — pendiente de tu revisión.
+`services/snapshot-autocapture/`: `snapshot_autocapture.py`,
+`axonik-snapshot-autocapture.service`/`.timer`, `README.md`.
+**No desplegado** — pendiente de tu revisión.
 
-Tres puntos siguen siendo la mejor estimación a partir de la documentación
-existente, marcados explícitamente en el código (no inventados con falsa
-certeza):
+**Los tres puntos de la Pregunta 4, confirmados contra el código real (no
+prosa) y corregidos:**
 
-1. Shape exacto de `POST /api/scan-batch`.
-2. Nombres de campo `entry_price`/`stop_price`/`risk_pct` en el payload de
-   `POST /api/snapshots` — el resto de campos (`ticker`/`market`/
-   `strategies`/`data_ts`/`snapshot_ts`/`temporal_group`) sí están
-   confirmados contra DOC-IDEM (Addendum 3, patch literal, y Addendum 4,
-   payload de prueba real contra el proxy en producción).
-3. Umbral numérico real de `detectAutoTrigger()` (hoy `80.0`, estimado a
-   partir de los `SCORE_ENTRADA` observados en `05_OPERACIONES`).
+1. **Shape de `POST /api/scan-batch` — corregido.** Real:
+   `{"results": [{"ticker", "timestamp", "data", "error"?}]}`. `fetch_scan_batch()`
+   ya no asume esta forma, y el bucle principal maneja `"error"` por-ticker
+   como una omisión de ese ticker, no como un fallo del batch completo.
+2. **`risk_pct` — MAL, corregido a `risk_per_share`.** `entry_price`/
+   `stop_price` sí coincidían con la estimación original.
+3. **Umbral de `detectAutoTrigger()` — corregido de un único valor a dos
+   ramas reales**, implementadas en `evaluate_auto_trigger()`:
+   `AUTO_HIGH` (una estrategia, score≥90) y `AUTO_MULTI` (≥2 estrategias
+   del mismo grupo, score≥80 cada una). "Mismo grupo" se interpreta aquí
+   como mismo `temporal_group` — es una lectura de la descripción, no una
+   cita literal de `detectAutoTrigger()`; dado que la paráfrasis de
+   `risk_pct` ya introdujo un error real una vez, esta agrupación debería
+   confirmarse contra el código antes de fiarse de ella en producción.
 
-`docs/pipeline/check_autocapture_triggers.sh` tiene ahora una sección
-"Pregunta 4" (modelos Pydantic de `create_snapshot`/`scan_batch` en el
-proxy) para cerrar los puntos 1 y 2 con la misma disciplina que todo lo
-anterior — extracción literal, no inferencia. El punto 3 no necesita un
-grep nuevo: debería verse en la salida de la Pregunta 1 de una pasada ya
-ejecutada.
+**Gap real descubierto al corregir el punto 1, no uno de los tres pedidos:**
+el shape real de `scan-batch` confirma que `"data"` son indicadores EN
+BRUTO, no un score precalculado. Este script dependía de
+`ticker_data.get("score")`, que nunca existió en la respuesta real — era
+una asunción incorrecta, no una aproximación válida. El cálculo del score
+(`evaluateTicker()` + `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES` +
+`applyEventAdjustments` + `tickerHardNo`) nunca se portó: solo se había
+confirmado que esas cinco piezas son "limpias" (sin `document.`/`window.`/
+`canvas`/`fetch` interno — Pregunta 1c), nunca se transcribió su
+**contenido**. `evaluate_ticker()` es ahora un `NotImplementedError`
+explícito, verificado que falla ruidoso en el primer ticker (no silencia
+el fallo ni finge un resultado — probado con mocks, incluido un ticker con
+`"error"` que sí se omite correctamente antes de llegar ahí).
+
+**Por esto no se escribe todavía el protocolo de verificación completo**
+que cerraría esta tarea: ejecutarlo contra el proxy real fallaría de
+inmediato en `evaluate_ticker()`, y documentar un protocolo de prueba
+sobre una pieza que admite no estar implementada sería exactamente el
+tipo de falsa certeza que este diseño ha evitado en todo lo anterior.
+Para cerrar esto de verdad hacen falta los **cuerpos literales** de las
+cinco piezas — no otro resumen en prosa, por la misma razón que
+`risk_per_share` ya se perdió en una paráfrasis.
 
 ### 1.6 Bind a 127.0.0.1 (hallazgo 2 del backlog) — patch listo, no aplicado
 

@@ -11,17 +11,35 @@ Bloqueante de "¿hace falta Playwright?" cerrado: `detectAutoTrigger()`,
 sobre datos, sin DOM ni dependencia de navegador (verificado con
 `docs/pipeline/check_autocapture_triggers.sh`).
 
-## Qué queda pendiente de confirmar antes de activar el timer
+## Estado tras la Pregunta 4 — 3 corregidos, 1 gap real bloqueante
 
-Marcado explícitamente en la cabecera de `snapshot_autocapture.py` — no son
-bloqueantes para revisar el diseño, pero sí para activarlo en producción:
+Los tres puntos que eran estimación ya se confirmaron contra el código
+real y están corregidos en `snapshot_autocapture.py`:
 
-1. Shape exacto de `POST /api/scan-batch` (`fetch_scan_batch`).
-2. Nombres de campo `entry_price`/`stop_price`/`risk_pct` en el payload de
-   `POST /api/snapshots` (`construir_payload_snapshot`) — el resto de campos
-   sí están confirmados contra DOC-IDEM.
-3. Umbral numérico real de `detectAutoTrigger()` (`detect_auto_trigger`,
-   hoy `80.0` como estimación).
+1. Shape de `POST /api/scan-batch` — corregido: `{"results": [{"ticker",
+   "timestamp", "data", "error"?}]}`, con el `"error"` por-ticker manejado
+   como omisión, no como fallo del batch.
+2. `risk_pct` — **era incorrecto**, el campo real es `risk_per_share`.
+3. Umbral de `detectAutoTrigger()` — corregido a las dos ramas reales
+   (`AUTO_HIGH` score≥90 individual, `AUTO_MULTI` ≥2 estrategias del mismo
+   `temporal_group` con score≥80 cada una — "mismo grupo" es una lectura,
+   no una cita literal, confirmar si hace falta certeza total).
+
+**Gap real descubierto al corregir el punto 1, no uno de los tres
+originales: el cálculo del score (`evaluateTicker()` + `NYSE_STRATEGIES`/
+`CRYPTO_STRATEGIES` + `applyEventAdjustments` + `tickerHardNo`) nunca se
+portó a Python.** El shape real de `scan-batch` ("data" = indicadores en
+bruto) demuestra que la asunción anterior (un `"score"` ya calculado en la
+respuesta) era sencillamente incorrecta. `evaluate_ticker()` es ahora un
+`NotImplementedError` explícito — verificado que el script falla ruidoso
+en el primer ticker real en vez de fingir un resultado.
+
+**Por esto el protocolo de verificación contra el servidor real (paso 3
+más abajo) todavía no está escrito.** Ejecutarlo hoy fallaría de
+inmediato en `evaluate_ticker()`. Antes de eso hace falta portar esa
+función con los **cuerpos literales** de las cinco piezas — no otro
+resumen en prosa, por la misma razón que `risk_per_share` ya se perdió en
+una paráfrasis.
 
 La forma de cerrarlos es la misma que ya ha funcionado en todo este diseño:
 extender `docs/pipeline/check_autocapture_triggers.sh` (sección "Pregunta 4",
@@ -84,7 +102,7 @@ Si todo lo anterior pasa, registrar el resultado como addendum en
 `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md`, igual que el
 Addendum 4 del otro documento.
 
-## Paso 2 — instalar el script y las units (solo tras cerrar los 3 puntos pendientes)
+## Paso 2 — instalar el script y las units (bloqueado: falta portar `evaluate_ticker()`, ver arriba)
 
 ```bash
 cp snapshot_autocapture.py /opt/axonik/scripts/snapshot_autocapture.py
