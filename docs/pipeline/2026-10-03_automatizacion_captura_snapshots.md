@@ -371,6 +371,71 @@ manualmente con los tickers que decidas — no lo hago yo —, y (c) se
 actualiza el código de `snapshot_autocapture.py` para leer de ahí en vez
 de `02_SCANNERS`.
 
+**Hecho (04/10/2026):** hoja real creada y poblada por ti con 17 tickers
+(`AAPL, MSFT, NVDA, GOOGL, AVGO, AMZN, META, AMD, INTC, QCOM, MU, TSM,
+PLTR, LLY, NVO, PFE, MRNA`), verificado contra el archivo real. Código
+de `cargar_universo_de_tickers()` actualizado (ver §1.9 más abajo).
+También se verificó, a petición tuya, que el ID del Decision Engine
+cambió (de `1ZEbgi7dBE-3P9gDmMj8NNvZwTAsrofY5` a
+`1oiI0itleTSzIznLNdY5yHcZ4K6Ofd6qq`) sin dejar rastro del ID antiguo
+hardcodeado en este repo (grep + `git log --all -S` contra todo el
+historial: 0 coincidencias — el script y el README solo usan la
+variable de entorno `AXONIK_DECISION_ENGINE_SHEET_ID`, nunca un literal)
+ni en el servidor real (verificado por ti con grep contra `/etc/axonik/`
+y `/opt/axonik/`).
+
+### 1.10 Paso 3 (04/10/2026): `POST /api/evaluate-ticker` — cableado parcial
+
+**Lado cliente, hecho.** `evaluate_ticker()` en `snapshot_autocapture.py`
+ya no es `NotImplementedError`: hace el `POST /api/evaluate-ticker` real
+con el shape que espera `evaluate_ticker_logic.evaluate_ticker()`
+(`ticker/mode/ind/funda/settings/btc_gate_on/insider_summary`), y pasa la
+respuesta directa a `evaluate_ticker_logic.detect_auto_trigger()`.
+Verificado con un smoke test con `requests.post` mockeado: el flujo
+completo encaja sin errores (`evaluate_ticker()` →
+`detect_auto_trigger()` → `construir_payload_snapshot()`).
+
+**Lado servidor, NO aplicado.** El código del endpoint está escrito y
+listo en `services/snapshot-autocapture/evaluate_ticker_endpoint.py`
+(modelo Pydantic `EvaluateTickerRequest` + cuerpo del handler, comentado
+a propósito en vez de decorado) — pero no se ha pegado en
+`market_data_proxy.py` real. Motivo: esta sesión **nunca ha visto ese
+archivo completo** — solo fragmentos extraídos por indentación desde la
+línea `def` de dos funciones (`create_snapshot`, `scan_batch`), sin la
+línea del decorador `@app.post(...)` de encima, sin los imports de
+cabecera, sin saber el nombre real de la variable `app`. Pegar el
+endpoint sin eso sería inventar el estilo del archivo real — exactamente
+lo que este diseño ha evitado en todo lo anterior.
+
+**Pregunta 6, añadida a `check_autocapture_triggers.sh`**, pendiente de
+ejecutar contra el servidor real:
+- **6a:** primeras 60 líneas del proxy (imports + instanciación de `app`).
+- **6b:** las 5 líneas anteriores a `def create_snapshot`/`def scan_batch`
+  — el decorador real, nunca visto.
+- **6c:** los modelos Pydantic (`class ...BaseModel`) — repetida porque
+  la salida original de la Pregunta 4a se pegó directamente en el chat y
+  se perdió al resumirse el contexto de la conversación, sin comitir a
+  un archivo. Sirve también para confirmar por fin si el campo real de
+  petición de `scan_batch()` es `"tickers"` (lo que ahora envía
+  `fetch_scan_batch()`, una suposición, no una cita literal) o algo
+  distinto.
+- **6d:** de dónde salen los valores reales de `settings.priceMin`/
+  `.atrMax`/`.rvolMin` (usados por `tickerHardNo()` y los 10 `evalXX`) —
+  hoy `SETTINGS` en `snapshot_autocapture.py` es un placeholder
+  (`priceMin=8, atrMax=6, rvolMin=1.0`), no un valor confirmado.
+
+**Hasta tener esa salida:** correr el script contra el proxy real falla
+con `404` en `evaluate_ticker()` — a propósito, no silenciado, mismo
+criterio que el `NotImplementedError` anterior.
+
+**Dos gaps adicionales, ya señalados, sin cambios por este paso:**
+de dónde salen `entry_price`/`stop_price`/`risk_per_share` para
+`construir_payload_snapshot()` (no están en el shape de
+`evaluate_ticker_logic.evaluate_ticker()`); y que `funda`/
+`insider_summary` viajan como `None` — fuera de alcance de este paso,
+`evaluate_ticker_logic` ya lo tolera sin fallar (ST-11 sale N/A, ST-01
+pierde 2 puntos de bonus).
+
 ---
 
 ## 2. Diseño del timer systemd (condicionado a confirmar 1.2)

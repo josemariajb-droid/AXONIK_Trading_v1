@@ -207,18 +207,44 @@ Abreviatura usada: **DOC-IDEM** =
   `evaluate_ticker_logic.evaluate_ticker()`, confirmado leyendo su
   código). `evaluate_ticker()` sigue siendo `NotImplementedError`
   explícito, pendiente del paso (3).
+- **Paso 3 — cableado parcial (04/10/2026):** lado cliente hecho:
+  `evaluate_ticker()` en `snapshot_autocapture.py` ya hace el `POST
+  /api/evaluate-ticker` real (ya no `NotImplementedError`), con el shape
+  que espera `evaluate_ticker_logic.evaluate_ticker()`. Lado servidor:
+  el código del endpoint está escrito y listo en
+  `services/snapshot-autocapture/evaluate_ticker_endpoint.py`, pero
+  **NO aplicado a `market_data_proxy.py`** — esta sesión nunca ha visto
+  ese archivo completo (no está en git), así que no se inventa el
+  decorador/imports reales. Se añadió una **Pregunta 6** a
+  `check_autocapture_triggers.sh` (6a: imports+app de la cabecera; 6b:
+  decorador real de `create_snapshot`/`scan_batch`, nunca visto porque
+  `print_python_def` localiza por `def`, no por la línea del decorador
+  de encima; 6c: modelos Pydantic, repetida porque la salida original de
+  la Pregunta 4a se pegó en el chat y se perdió al resumir el contexto,
+  nunca se comitió a un archivo; 6d: valores reales de
+  `settings.priceMin/atrMax/rvolMin`, usados hoy como placeholder en
+  `SETTINGS` del script). Hasta tener esa salida, correr el script
+  contra el proxy real falla con 404 en `evaluate_ticker()` — a
+  propósito, no silenciado. Verificado con un smoke test con
+  `requests.post` mockeado: el flujo completo (`evaluate_ticker()` →
+  `detect_auto_trigger()` → `construir_payload_snapshot()`) encaja sin
+  errores.
 - **Para cerrarlo:** (1) ~~aplicar a mano la hoja y la fila de
   `00_README`~~ hecho; (2) ~~actualizar `cargar_universo_de_tickers()`~~
-  hecho; (3) cablear `POST /api/evaluate-ticker` en el proxy con
-  `evaluate_ticker_logic.py`; (4) verificación navegador-vs-endpoint con
-  datos reales, obligatoria antes de marcar "verificado"; (5) confirmar
-  si "mismo grupo" en `AUTO_MULTI` es de verdad `temporal_group` (lectura
-  actual del campo `group` de `STRATEGY_META`, consistente con el texto
-  literal de `detectAutoTrigger`, pero sin una comparación navegador-vs-
-  endpoint todavía); (6) aplicar el bind a `127.0.0.1`; (7) desplegar y
-  verificar siguiendo el protocolo del README (`--dry-run`, luego una
-  corrida real con ZZTEST fuera de la franja de los timers del
-  evaluador) antes de habilitar el timer.
+  hecho; (3) ejecutar la Pregunta 6 contra el servidor real y aplicar
+  `evaluate_ticker_endpoint.py` a `market_data_proxy.py` con el
+  decorador/imports confirmados, corrigiendo `SETTINGS` y el campo de
+  `fetch_scan_batch()` si hace falta; (4) resolver el origen de
+  `entry_price`/`stop_price`/`risk_per_share`; (5) verificación
+  navegador-vs-endpoint con datos reales, obligatoria antes de marcar
+  "verificado"; (6) confirmar si "mismo grupo" en `AUTO_MULTI` es de
+  verdad `temporal_group` (lectura actual del campo `group` de
+  `STRATEGY_META`, consistente con el texto literal de
+  `detectAutoTrigger`, pero sin una comparación navegador-vs-endpoint
+  todavía); (7) aplicar el bind a `127.0.0.1`; (8) desplegar y verificar
+  siguiendo el protocolo del README (`--dry-run`, luego una corrida real
+  con ZZTEST fuera de la franja de los timers del evaluador) antes de
+  habilitar el timer.
 
 ### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
 

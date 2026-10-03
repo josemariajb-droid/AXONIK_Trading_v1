@@ -323,5 +323,73 @@ echo "    tan necesaria como STRATEGY_META. ---"
 print_js_def "$SCANNER_HTML" "MAX_RAW_SCORE"
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c y 5d -- hasta"
-echo "    tener las 22 piezas no se porta nada al endpoint nuevo. ==="
+echo "=== Pregunta 6a: cabecera del proxy -- imports + instanciación de la app FastAPI ==="
+echo "--- Para escribir POST /api/evaluate-ticker (paso 3, decisión 04/10/2026)"
+echo "    hace falta saber el nombre real de la variable 'app', el estilo de"
+echo "    import (Pydantic v1 vs v2, 'from fastapi import ...') y si ya existe"
+echo "    algún Depends/auth compartido que el endpoint nuevo debería seguir --"
+echo "    nunca visto el archivo completo, no se inventa el patrón. ---"
+if [[ -r "$PROXY_PY" ]]; then
+    sed -n '1,60p' "$PROXY_PY"
+else
+    echo "  (archivo no legible: $PROXY_PY — probar con sudo)"
+fi
+
+echo
+echo "=== Pregunta 6b: decorador real de create_snapshot() y scan_batch() ==="
+echo "--- print_python_def ya volcó los cuerpos (Pregunta 4b/4c) pero localiza"
+echo "    por 'def', no por el '@app.post(...)' de la línea anterior -- nunca"
+echo "    se vio ese decorador. Necesario para que el endpoint nuevo use el"
+echo "    mismo estilo (ruta, Depends si lo hay, response_model si lo hay). ---"
+if [[ -r "$PROXY_PY" ]]; then
+    for pattern in 'def[[:space:]]+create_snapshot\b' 'def[[:space:]]+scan_batch\b'; do
+        line=$(grep -n -m1 -E "$pattern" "$PROXY_PY" 2>/dev/null | head -1 | cut -d: -f1)
+        if [[ -n "$line" ]]; then
+            start=$(( line - 5 > 0 ? line - 5 : 1 ))
+            echo "- líneas $start-$line (decorador + firma):"
+            sed -n "${start},${line}p" "$PROXY_PY"
+        else
+            echo "  (no encontrado: patrón '$pattern')"
+        fi
+    done
+else
+    echo "  (archivo no legible: $PROXY_PY — probar con sudo)"
+fi
+
+echo
+echo "=== Pregunta 6c: modelos Pydantic -- repetición de la Pregunta 4a ==="
+echo "--- La salida de la Pregunta 4a se pegó directamente en el chat (nunca"
+echo "    se comitió a un archivo), así que ya no está disponible en esta"
+echo "    sesión tras el resumen de contexto. Se repite aquí para no asumir"
+echo "    nombres de campo de memoria -- en concreto, confirmar si"
+echo "    ScanBatchRequest usa 'tickers' o algo distinto (en"
+echo "    snapshot_autocapture.py se cambió 'scanner_ids' a 'tickers' como"
+echo "    SUPOSICIÓN, no una cita literal). ---"
+if [[ -r "$PROXY_PY" ]]; then
+    mapfile -t model_lines < <(grep -n -E '^class[[:space:]]+[A-Za-z_]+\(.*BaseModel' "$PROXY_PY" 2>/dev/null)
+    if [[ ${#model_lines[@]} -eq 0 ]]; then
+        echo "  (no se encontró ninguna clase BaseModel en $PROXY_PY)"
+    else
+        for entry in "${model_lines[@]}"; do
+            ln="${entry%%:*}"
+            echo "- definida en línea $ln:"
+            extract_python_block "$PROXY_PY" "$ln" 60
+        done
+    fi
+else
+    echo "  (archivo no legible: $PROXY_PY — probar con sudo)"
+fi
+
+echo
+echo "=== Pregunta 6d: de dónde salen los valores reales de settings (priceMin/atrMax/rvolMin) ==="
+echo "--- evaluateTicker()/tickerHardNo() usan settings.priceMin/.atrMax/"
+echo "    .rvolMin (ya visto en 5/5b/5c), pero vienen de state.settings en el"
+echo "    navegador -- nunca se vio dónde se inicializa ese objeto ni sus"
+echo "    valores por defecto. Sin esto, snapshot_autocapture.py no tiene qué"
+echo "    settings reales pasarle al endpoint nuevo. ---"
+grep -n -E "priceMin|atrMax|rvolMin" "$SCANNER_HTML" 2>/dev/null | grep -v -E "settings\.(priceMin|atrMax|rvolMin)\b" \
+    || echo "(sin coincidencias fuera de los usos ya vistos -- puede que los valores por defecto vivan en 09_PARAMETROS/12_CONFIGURACION de Sheets, no en el HTML; revisar ahí si esto sale vacío)"
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d y 6 -- hasta"
+echo "    tener esto no se escribe el patch final de POST /api/evaluate-ticker. ==="

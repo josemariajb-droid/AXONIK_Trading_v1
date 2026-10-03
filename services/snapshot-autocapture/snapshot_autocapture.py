@@ -59,31 +59,58 @@ ESTADO TRAS LA PREGUNTA 4 (confirmado contra el código real, no prosa):
     segunda copia aquí es exactamente lo que ya introdujo el bug de
     unión de ramas una vez.
 
-GAP REAL (sin cambios por este paso, sigue bloqueando la producción real):
+PASO 3 (04/10/2026): evaluate_ticker() YA LLAMA a POST /api/evaluate-ticker —
+pero ese endpoint TODAVÍA NO EXISTE en market_data_proxy.py real.
 
-  El cálculo del score en sí (evaluateTicker() + NYSE_STRATEGIES +
-  CRYPTO_STRATEGIES + applyEventAdjustments + tickerHardNo) está portado
-  en evaluate_ticker_logic.py (22 piezas, con pruebas), pero TODAVÍA NO
-  está expuesto como POST /api/evaluate-ticker en market_data_proxy.py
-  (decisión de arquitectura 04/10/2026: single source of truth
-  server-side, no duplicar aquí). evaluate_ticker() de abajo sigue
-  siendo un NotImplementedError explícito hasta que ese endpoint exista
-  y se cablee la llamada real — no se inventa esa lógica aquí.
+  Lado cliente (este archivo): cableado. evaluate_ticker() hace el POST
+  real con el shape que espera evaluate_ticker_logic.evaluate_ticker()
+  (ticker/mode/ind/funda/settings/btc_gate_on/insider_summary) y devuelve
+  la respuesta directamente — ya no es un NotImplementedError.
 
-  Tampoco está resuelto de dónde salen entry_price/stop_price/
-  risk_per_share para construir_payload_snapshot() — no están en el
-  shape de evaluate_ticker_logic.evaluate_ticker() (confirmado arriba).
-  Pendiente junto con el cableado del endpoint.
+  Lado servidor: el código del endpoint está escrito y listo en
+  services/snapshot-autocapture/evaluate_ticker_endpoint.py (import de
+  evaluate_ticker_logic, modelo Pydantic, cuerpo del handler), pero NO
+  está aplicado a market_data_proxy.py — esta sesión nunca ha visto ese
+  archivo completo (no está en git, BACKLOG entrada 3; solo fragmentos
+  por "Pregunta N" de check_autocapture_triggers.sh), así que no se
+  inventa el decorador/imports reales. Pendiente de la Pregunta 6
+  (añadida a ese script: imports+app de la cabecera, decorador real de
+  create_snapshot/scan_batch, y los modelos Pydantic — para ajustar el
+  endpoint al estilo real antes de pegarlo).
 
-Protocolo antes de instalar el timer (no aplicable todavía, ver el gap de
-arriba):
-  1. Cablear POST /api/evaluate-ticker en market_data_proxy.py con
-     evaluate_ticker_logic.py, y resolver el origen de
-     entry_price/stop_price/risk_per_share.
-  2. Confirmar el shape de petición real de scan_batch() (campo
-     "tickers" es una suposición, no una cita literal — ver arriba).
-  3. Ejecutar con --dry-run contra el proxy real y revisar el log.
-  4. Ejecutar una vez sin --dry-run con --force-window fuera de la franja
+  Hasta que el endpoint exista en el servidor real, correr este script
+  contra el proxy real falla con 404 en evaluate_ticker() — ruidoso,
+  a propósito, no silenciado.
+
+  Tres puntos quedan explícitamente SIN CONFIRMAR, señalados también en
+  evaluate_ticker_endpoint.py y en la Pregunta 6:
+
+  1. SETTINGS de abajo (priceMin/atrMax/rvolMin) — valores de ejemplo,
+     NO los reales de producción. tickerHardNo()/los 10 evalXX dependen
+     de ellos directamente (p.ej. decide HARD_NO). Pregunta 6d busca de
+     dónde salen los reales (state.settings en el navegador, o quizá
+     09_PARAMETROS/12_CONFIGURACION en Sheets).
+  2. fetch_scan_batch() sigue enviando "tickers" como suposición (no
+     confirmado contra el Pydantic real — Pregunta 6c lo repite porque
+     la salida original de la Pregunta 4a se perdió al resumir el
+     contexto, nunca se comitió a un archivo).
+  3. construir_payload_snapshot(): de dónde salen entry_price/
+     stop_price/risk_per_share sigue sin resolver — no están en el
+     shape de evaluate_ticker_logic.evaluate_ticker() (confirmado
+     leyendo su código: solo produce score/verdict/factors). Se leen
+     con .get() de `evaluation` a propósito, para fallar visible
+     (None) en vez de fingir un valor, hasta que se resuelva esto.
+
+Protocolo antes de instalar el timer (no aplicable todavía, ver arriba):
+  1. Ejecutar la Pregunta 6 de check_autocapture_triggers.sh contra el
+     servidor real y pegar/comitir la salida.
+  2. Aplicar evaluate_ticker_endpoint.py a market_data_proxy.py con el
+     decorador/imports reales confirmados en 6a/6b.
+  3. Corregir SETTINGS de abajo con los valores reales (6d) y el campo
+     de fetch_scan_batch() si "tickers" no es el real (6c).
+  4. Resolver el origen de entry_price/stop_price/risk_per_share.
+  5. Ejecutar con --dry-run contra el proxy real y revisar el log.
+  6. Ejecutar una vez sin --dry-run con --force-window fuera de la franja
      de los timers del evaluador, con un ticker de prueba (ZZTEST), y
      confirmar la respuesta antes de instalar el timer.
 """
@@ -124,6 +151,15 @@ OPERATING_WEEKDAYS = {0, 1, 2, 3, 4}  # datetime.weekday(): lunes=0 ... viernes=
 # atada a la apertura de NYSE, no a cripto (24/7). Decisión aparte si se quiere
 # ampliar, no asumida aquí.
 EXCLUDED_MARKETS = {"CRYPTO"}
+
+# NO CONFIRMADO (Pregunta 6d, pendiente) — placeholder, no los valores
+# reales de producción. Ajustables por entorno mientras se confirman.
+# tickerHardNo()/los evalXX dependen de estos tres directamente.
+SETTINGS = {
+    "priceMin": float(os.environ.get("AXONIK_SETTINGS_PRICE_MIN", 8)),
+    "atrMax": float(os.environ.get("AXONIK_SETTINGS_ATR_MAX", 6)),
+    "rvolMin": float(os.environ.get("AXONIK_SETTINGS_RVOL_MIN", 1.0)),
+}
 
 LOG_PATH = Path(os.environ.get("AXONIK_AUTOCAPTURE_LOG", "/var/log/axonik/snapshot_autocapture.log"))
 
@@ -218,21 +254,39 @@ def fetch_scan_batch(universo: list[TickerUniverseEntry]) -> dict:
 
 def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
     """
-    NO IMPLEMENTADO — GAP REAL, no un valor por defecto.
+    Llama a POST /api/evaluate-ticker (decisión de arquitectura
+    04/10/2026: single source of truth server-side con
+    evaluate_ticker_logic.py — ese mismo módulo define el shape de
+    respuesta esperado, listo para pasar directo a
+    evaluate_ticker_logic.detect_auto_trigger()).
 
-    Pendiente de cablear como llamada a POST /api/evaluate-ticker en
-    market_data_proxy.py (decisión de arquitectura 04/10/2026: single
-    source of truth server-side con evaluate_ticker_logic.py, no una
-    segunda copia en este script). El shape de retorno esperado, una vez
-    cableado, es el de evaluate_ticker_logic.evaluate_ticker(): un dict
-    con "strategies" (lista completa de las 7 NYSE o 3 crypto fijas por
-    `mercado`), "hardNo", "globalVerdict" — listo para pasar directo a
-    evaluate_ticker_logic.detect_auto_trigger().
+    GAP REAL que sigue abierto, no resuelto por este cambio: el endpoint
+    todavía no existe en market_data_proxy.py (ver cabecera del archivo
+    y evaluate_ticker_endpoint.py) — esta llamada falla con 404 contra
+    el proxy real hasta que se aplique. `funda`/`insider_summary` van
+    como None a propósito: no se porta aquí /api/fundamentals-batch ni
+    una fuente de insider score, fuera del alcance de este paso — con
+    funda=None, ST-11 sale N/A y ST-01 pierde sus 2 puntos de bonus de
+    fundamentales, nada más (evaluate_ticker_logic ya lo maneja sin
+    fallar). `btc_gate_on=False` es irrelevante hoy: CRYPTO está
+    excluido de esta ventana (EXCLUDED_MARKETS), así que solo se evalúan
+    tickers NYSE, donde ese flag no se usa.
     """
-    raise NotImplementedError(
-        f"evaluate_ticker({ticker!r}, mercado={mercado!r}): falta cablear "
-        f"POST /api/evaluate-ticker. Ver docstring y cabecera del archivo."
+    resp = requests.post(
+        f"{PROXY_BASE}/api/evaluate-ticker",
+        json={
+            "ticker": ticker,
+            "mode": mercado,
+            "ind": data,
+            "funda": None,
+            "settings": SETTINGS,
+            "btc_gate_on": False,
+            "insider_summary": None,
+        },
+        timeout=15,
     )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def construir_payload_snapshot(ticker: str, evaluation: dict, trigger: dict,
@@ -334,9 +388,11 @@ def main() -> int:
             continue
 
         data = item.get("data") or {}
-        # evaluate_ticker() lanza NotImplementedError a propósito — ver
-        # cabecera del archivo. No se captura aquí: debe fallar ruidoso,
-        # no silenciarse ticker a ticker.
+        # evaluate_ticker() llama a POST /api/evaluate-ticker, que todavía
+        # no existe en el servidor real (ver cabecera del archivo) -- esto
+        # lanza un error de requests (404/conexión) a propósito. No se
+        # captura aquí: debe fallar ruidoso y parar la corrida, no
+        # silenciarse ticker a ticker ni fingir que no pasó nada.
         evaluation = evaluate_ticker(ticker, data, entry.mercado)
 
         trigger = etl.detect_auto_trigger(evaluation)
