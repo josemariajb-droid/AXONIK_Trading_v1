@@ -6,8 +6,8 @@
 producción.
 **⚠ Premisa corregida el 03/10/2026:** el escritor de `05_OPERACIONES` **no es
 n8n**, y el duplicado de ST-16 no se origina en la escritura a Sheets. Leer
-primero el "Addendum 03/10/2026" al final: el diseño de nodos n8n de abajo no
-es aplicable tal cual.
+primero los addenda del 03/10/2026 al final. El diseño de nodos n8n de abajo no
+es aplicable tal cual: el diseño vigente es el del "Addendum 2".
 
 ## Contexto
 
@@ -249,42 +249,254 @@ hash distinto, el `UNIQUE` no saltó y entraron 4 snapshots nuevos. Cualquier
 re-escaneo que cruce la medianoche UTC antes de que exista una vela nueva
 reproduce el bug.
 
-### Latencias secundarias en `sync_to_sheet()` (no causaron ST-16, pero existen)
+## Addendum 2 — 03/10/2026: diseño corregido (DISEÑO, no implementado)
 
-1. `except Exception` amplio: devuelve `False` ante **cualquier** error. Si
-   `append_row` llegó a escribir en Google pero la respuesta falla (error de
-   red al leer, 5xx tras commit), la fila existe y `sheet_synced` queda en
-   `FALSE`, así que el siguiente reintento la duplica.
-2. Ventana sin atomicidad: si el proceso muere entre `append_row` y
-   `UPDATE … sheet_synced=TRUE` + `commit`, la siguiente ejecución la vuelve
-   a añadir.
-3. `gspread` 6.2.1 con `timeout=None` (por defecto): no hay timeout HTTP
-   explícito. Un cuelgue bloquearía la ejecución en lugar de fallar.
-4. `OP_ID = signal_hash[:12]` se escribe en la hoja, pero no se usa para
-   comprobar si ya existe antes del append.
+Hay **dos hallazgos separados**, con causas y fixes distintos:
 
-### Implicaciones para el diseño (pendiente de decisión, no aplicado)
+- **Hallazgo 1, la causa de ST-16:** `signal_hash` se calcula sobre la fecha de
+  ejecución del escaneo.
+- **Hallazgo 2, un riesgo latente:** la escritura a Sheets en
+  `sync_to_sheet()` no es idempotente.
 
-- **El guard Redis tal como está diseñado no habría bloqueado ST-16.** La
-  clave `…:{fecha}:{precio_entrada}` tomaría `fecha` de la columna `FECHA`,
-  que es `snapshot_ts.date()`, y ese valor es justo lo que difería entre
-  ambas escrituras (07 frente a 08). Para cubrir el caso, la clave tendría que
-  usar la fecha de `data_ts`.
-- **El punto de corrección natural es `compute_signal_hash`.** Usar
-  `data_dt` (o `data_ts` completo) en lugar de `snapshot_dt` hace que el
-  `UNIQUE` ya existente en Postgres sea el guard atómico de idempotencia, sin
-  añadir Redis. Contrapartida: dos señales legítimas sobre la misma vela
-  y con la misma estrategia pasarían a considerarse la misma. Es el
-  comportamiento deseado, pero conviene confirmarlo.
-- Las latencias 1 y 2 de `sync_to_sheet()` son un segundo vector
-  independiente, con la misma firma. Si se quiere cerrarlo, el guard natural
-  es por `OP_ID`/`signal_hash` en el punto del append, ya sea con Redis
-  `SET NX` sobre `signal_hash` o con una búsqueda de `OP_ID` en la hoja.
-- El protocolo de verificación de arriba (doble positivo, rama suprimida,
-  TTL, negativo) sigue siendo válido como criterio de cierre, pero hay que
-  reformularlo contra `POST /api/snapshots` y el evaluador en lugar de
-  contra "Execute Workflow" en n8n.
+No se ha tocado nada en producción. Todo lo de abajo es diseño pendiente de
+revisión.
 
-**No ejecutado:** ningún paso del protocolo de verificación, porque no hay
-nada desplegado que verificar. Fuera de alcance y sin tocar:
-`scripts/validation_engine/` y los Gates.
+### Hallazgo 1 — `signal_hash` usa la fecha de escaneo, no `data_ts`
+
+#### 1.1 La restricción `UNIQUE` de Postgres no cubre el caso
+
+```
+signal_snapshots_signal_hash_key | UNIQUE (signal_hash)     ← única restricción de unicidad
+signal_snapshots_pkey            | PRIMARY KEY (id)
+(+ 3 CHECK de precio/riesgo; índices no únicos en status, ticker, snapshot_ts y temporal_group)
+```
+
+(`SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='signal_snapshots'::regclass`)
+
+La restricción solo cubre `signal_hash`, y ese hash
+(`compute_signal_hash`) se construye con `snapshot_dt.strftime("%Y%m%d")`.
+**No hay ninguna restricción que incluya `data_ts`.** El guard existe en
+forma, pero hereda el defecto del hash. No hace falta un guard nuevo: hace
+falta que el que ya existe use la clave correcta.
+
+Restricción relevante para cualquier migración: el trigger
+`trg_snapshot_immutable` (`prevent_snapshot_mutation`, BEFORE UPDATE) prohíbe
+modificar `signal_hash`, `snapshot_ts`, `data_ts`, `strategies`, etc. **No se
+pueden recalcular los hashes de las filas existentes** sin desactivar el
+trigger. `DELETE` sí está permitido, porque el trigger solo actúa sobre
+UPDATE.
+
+#### 1.2 Qué dispara el re-escaneo: es recurrente por diseño, aunque hoy está inactivo
+
+**Quién crea snapshots.** Solo hay una vía: el scanner HTML
+(`/opt/axonik/scanner/index.html`, que sirve el propio proxy en
+`:8002/scanner`), desde el navegador. **No hay ningún cron ni timer de
+servidor que cree snapshots.** Los timers de systemd solo ejecutan el
+evaluador, que lee y cierra snapshots. Hay dos rutas:
+
+- `autoCaptureSnapshots()` (~l.2690): se ejecuta en **cada** `runScan()`.
+  Captura automáticamente (`AUTO_HIGH`) los tickers que pasan
+  `detectAutoTrigger`.
+- El botón "Seguir" (`MANUAL`, ~l.2046).
+
+`runScan()` se dispara a mano o con el auto-refresh opcional
+(`setAutoRefreshTimer`, cada 15 min mientras la pestaña está visible).
+
+**El único guard del cliente se reinicia a medianoche UTC.** Se llama
+`state.followedToday` y lo carga `loadFollowedToday()` con
+`GET /api/snapshots?status=OPEN&since=<00:00 UTC de hoy>`. La clave del
+servidor también usa el día UTC del escaneo. Los dos guards caducan a la vez
+a las 00:00 UTC, mientras que `data_ts` (la vela 1D) no cambia hasta que hay
+una vela nueva.
+
+**Ventana en la que el bug se reproduce (NYSE).** La vela diaria de
+yfinance tiene `t = 04:00 UTC`, es decir, 00:00 en Nueva York. Desde las 00:00
+UTC hasta la apertura del mercado (13:30 UTC en verano, 14:30 UTC en invierno),
+la última vela sigue siendo la del día anterior. **Cualquier escaneo NYSE
+en esa franja de unas 13,5 h diarias recaptura, con un hash nuevo, toda
+señal capturada el día UTC anterior que siga cumpliendo el trigger.** En fin
+de semana o festivo la ventana se amplía: una señal del viernes puede
+recapturarse el sábado, el domingo y el lunes por la mañana, es decir, hasta
+4 copias. ST-16 encaja exactamente: el primer escaneo fue el 08-07 a las 21:22
+UTC (23:22 en Madrid) y el segundo el 08-08 a las 08:52 UTC (10:52 en Madrid),
+ambos sobre la vela con `data_ts 2026-08-07 04:00 UTC`.
+
+En crypto el problema prácticamente no existe con velas 1D, porque la vela de
+Binance abre a las 00:00 UTC y su fecha coincide casi siempre con el día UTC
+del escaneo.
+
+El defecto opuesto también existe: dos escaneos el mismo día UTC sobre
+**velas distintas** (por ejemplo, a las 12:00 UTC sobre la vela del día
+anterior y a las 15:00 UTC sobre la parcial de hoy) generan el mismo hash, y
+el segundo se descarta como duplicado aunque sea una señal nueva.
+
+**¿Está activo ahora?** El bug es recurrente por diseño, pero **hoy no se
+está disparando, porque el scanner no se usa:**
+- `signal_snapshots` tiene 12 filas (ids 14–26) y la última es del
+  **2026-08-08 08:56 UTC**. No se ha capturado nada en casi 2 meses.
+- El journal del proxy (disponible desde el 25/09) no tiene ninguna petición
+  a `/api/scan-batch` ni a `/api/snapshots`. Solo hay sondeos de bots
+  (`/`, `/mcp`, `/robots`…).
+- No he podido determinar si el segundo escaneo del 08/08 fue manual o
+  vino del auto-refresh: el log de nginx empieza el 15/09 y el proxy no
+  registraba accesos en agosto. Sea cual sea el origen, la causa es la misma.
+
+**En cuanto se vuelva a usar el scanner (para acumular PAPER), el bug se
+reactiva** en cada escaneo NYSE que caiga en la ventana descrita.
+
+#### 1.3 Diseño del fix: la clave pasa a ser `data_ts`
+
+**Clave de identidad de una señal:** `ticker + market + data_ts + estrategias`.
+Una señal es "esta estrategia disparó sobre esta vela". La hora del escaneo
+no forma parte de la identidad.
+
+**Fix principal, en Postgres y en el proxy (recomendado, sin Redis):**
+
+```python
+# market_data_proxy.py
+def compute_signal_hash(ticker, market, data_dt, strategy_ids) -> str:
+    data_key = data_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ids_sorted = ",".join(sorted(strategy_ids))
+    raw = f"v2|{ticker.upper()}|{market.lower()}|{data_key}|{ids_sorted}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+# create_snapshot():
+signal_hash = compute_signal_hash(req.ticker, req.market, data_dt, strategy_ids)  # data_dt, no snapshot_dt
+```
+
+- **Por qué basta:** el `UNIQUE (signal_hash)` existente, junto con la captura
+  de `UniqueViolation` que ya tiene `create_snapshot`, es atómico. Dos
+  peticiones concurrentes no pueden insertar ambas. Esto es equivalente al
+  `SET NX` de Redis del diseño original, pero en la fuente de verdad y sin
+  infraestructura nueva.
+- **`data_ts` completo, no solo la fecha.** Así la clave no depende de
+  zonas horarias ni de cómo se trunque la fecha, y sirve igual para
+  velas no diarias si en el futuro `data_ts` se toma de otro timeframe.
+  Requisito: el cliente debe enviar el `t` de la vela tal cual (hoy ya lo
+  hace con `d.candles[last].t`).
+- **El prefijo `v2|`** separa explícitamente el espacio de hashes nuevo
+  del antiguo. Las filas existentes conservan su hash v1, que el trigger de
+  inmutabilidad impide recalcular. No hay riesgo de colisión ni de falso
+  "no duplicado" entre v1 y v2, porque todas las filas v1 son de agosto y
+  nunca se volverá a escanear sobre esas velas.
+- **Sin precio en la clave**, y esto es una corrección deliberada respecto
+  al diseño original, que incluía `precio_entrada`. Si se escanea durante la
+  sesión, la vela de hoy es parcial y `entry_price` cambia en cada escaneo.
+  Con el precio en la clave, cada re-escaneo intradía crearía otra señal. En
+  el propio ST-16, el `stop_price` de AVGO ya difería entre las dos copias
+  (389.0360 frente a 389.0352). La regla resultante es "la primera captura
+  sobre una vela gana" y las siguientes devuelven `created:false` con
+  `existing_id`, que es la misma semántica que tiene hoy dentro de un día
+  UTC. **Este punto requiere su confirmación.**
+- **Rastro de la supresión:** hoy `created:false` se devuelve sin dejar
+  registro. El diseño añade un `logger.info("snapshot duplicado suprimido
+  ticker=… data_ts=… existing_id=…")`. Es el equivalente a la rama
+  `REENVIO_SUPRIMIDO`.
+- **Cliente (opcional, solo para la interfaz):** `loadFollowedToday()` podría
+  dejar de filtrar por medianoche UTC y considerar seguido un ticker si tiene
+  un snapshot `OPEN` sobre la vela actual. No es necesario para la
+  integridad, porque el servidor ya rechaza el duplicado, pero evita el
+  aviso falso de "señal capturada".
+
+**Endurecimiento opcional (alternativa a la anterior, más invasiva):**
+añadir una columna `dedup_key` con su propio `UNIQUE`, en lugar de reutilizar
+`signal_hash`. La única ventaja es que la regla queda explícita en el
+esquema. Costes: una migración y un backfill que chocaría con los 4 pares
+duplicados existentes (habría que dejar `dedup_key = NULL` en los ids 19–22).
+**No lo recomiendo** para este fix.
+
+**Guard Redis complementario: no lo recomiendo para el hallazgo 1.**
+Postgres ya ofrece unicidad atómica en el mismo punto de escritura. Un `SET
+NX` en Redis delante añadiría una segunda fuente de verdad que puede
+divergir (si el `SET` tiene éxito y el `INSERT` falla, la señal queda
+bloqueada 60 días sin existir) y no cubre ningún caso adicional. Redis
+podría encajar en el hallazgo 2 (ver abajo), no aquí.
+
+**Filas existentes (fuera de este fix):** los 4 duplicados (ids 19–22) siguen
+en la base de datos. Su exclusión de métricas ya está decidida en la capa de
+validación (`duplicate_batch_replay`), así que el fix no los borra ni los
+modifica.
+
+#### 1.4 Protocolo de verificación reformulado para el hallazgo 1
+
+Se ejecuta contra `POST /api/snapshots`, no contra n8n:
+
+1. **Doble positivo, que reproduce el mecanismo de ST-16.** Hacer dos POST con
+   `ticker=ZZTEST`, `strategies=[{id:"ST-16"}]` y el **mismo** `data_ts`, pero
+   con `snapshot_ts` en **días UTC distintos** (por ejemplo, 23:22 UTC del día
+   D y 08:52 UTC del día D+1). Esperado: el primero devuelve `created:true`,
+   el segundo `created:false` con el `existing_id` del primero, y hay 1 sola
+   fila en la base de datos.
+2. **Rama de supresión:** la línea `snapshot duplicado suprimido` aparece en el
+   log del proxy para el segundo POST.
+3. **Negativo de control:** un tercer POST con `data_ts` distinto (la vela
+   siguiente) debe devolver `created:true`, con 2 filas en total. Un segundo
+   negativo: mismo `data_ts` y otra estrategia (`ST-05`) también debe devolver
+   `created:true`.
+4. **TTL:** no aplica, porque no hay Redis en este fix. La clave de Postgres
+   es permanente, lo cual es correcto: una vela pasada no vuelve a ser
+   actual.
+5. **Limpieza:** `DELETE FROM signal_snapshots WHERE ticker='ZZTEST'` (el
+   trigger lo permite) **antes de que corra el siguiente evaluador**. Si no,
+   el evaluador intentará evaluar ZZTEST y llegará a `sync_to_sheet()`.
+   Hacer la prueba fuera de la franja de los timers (16:00–22:00 en días
+   laborables y 18:30 todos los días) y verificar la limpieza con un
+   `SELECT` antes de cerrar.
+
+### Hallazgo 2 — `sync_to_sheet()` no es idempotente (riesgo latente, independiente de ST-16)
+
+Este hallazgo **no** causó ST-16: hay 0 fallos de sync en el log desde el
+07/08 y ningún snapshot se cerró dos veces. Pero puede producir la misma
+firma (filas duplicadas en `05_OPERACIONES`) por una vía totalmente distinta,
+y el fix del hallazgo 1 no lo cubre.
+
+**Riesgos** (`/opt/axonik/scripts/snapshot_evaluator.py`):
+
+1. **El `except Exception` se traga los errores** (`sync_to_sheet`, ~l.539).
+   Cualquier error devuelve `False` y solo deja un `WARNING`. El problema son
+   los errores ambiguos: si `append_row` llegó a escribir en Google pero
+   falla la respuesta (un reset de conexión al leer, un 5xx/429 tras aplicar
+   la escritura), la fila existe, `sheet_synced` se queda en `FALSE` y el
+   bloque "Reintento de sync pendiente" la vuelve a añadir en la siguiente
+   ejecución.
+2. **No se comprueba `OP_ID` antes del append.** La fila lleva
+   `OP_ID = signal_hash[:12]`, una clave natural perfecta, pero nadie
+   comprueba si ya está en la hoja antes de añadirla. El único guard es
+   `sheet_synced` en Postgres, que no es atómico con la escritura en Google.
+3. **Ventana sin atomicidad entre el append y el `UPDATE sheet_synced=TRUE` +
+   `commit`.** Si el proceso muere ahí (OOM, reinicio, kill del timer), en la
+   siguiente ejecución se duplica.
+4. **gspread puede colgarse:** la versión 6.2.1 tiene `timeout=None` por
+   defecto, y `_get_worksheet()` no fija ninguno. Una conexión colgada
+   bloquea el proceso indefinidamente. Si se mata por timeout externo, se cae
+   en el punto 3.
+5. **Ejecuciones concurrentes sin lock (riesgo nuevo, confirmado en el log).**
+   `axonik-snapshot-eval-daily` (18:30 todos los días) y
+   `axonik-snapshot-eval-intraday` (cada 30 min entre 16:00 y 21:30, L-V,
+   **incluido 18:30**) son units distintas sin exclusión mutua. Hay **44
+   ocasiones** en el log con dos `run start` en el mismo minuto (las más
+   recientes: 28/09 a 02/10, siempre a las 18:30). El bucle principal filtra
+   por grupo, pero **el bloque de reintento no**: si hubiera snapshots
+   pendientes, las dos ejecuciones simultáneas los añadirían a la vez a la
+   hoja.
+
+**Dirección del fix (solo esbozo; requiere su propio diseño y revisión):**
+
+- Exclusión mutua entre las dos ejecuciones: `flock` en el `ExecStart` de
+  ambas units sobre el mismo fichero de lock, o un lock de Redis `SET NX EX`
+  con TTL corto.
+- Comprobar `OP_ID` en la hoja antes del append (lee la columna `OP_ID` y
+  omite si ya está). Con el lock anterior, esta lectura previa deja de tener
+  condición de carrera, y es lo único que resuelve el caso ambiguo del punto 1.
+- `set_timeout` explícito en el cliente de gspread.
+- Distinguir los errores ambiguos de los definitivos en el `except`, o
+  confiar en la comprobación de `OP_ID` para que el reintento sea inocuo
+  en ambos casos.
+
+### Estado
+
+**DISEÑO, no implementado ni desplegado.** Pendiente de revisión del usuario
+de: (i) la clave `ticker+market+data_ts+estrategias` sin precio (§1.3),
+(ii) descartar Redis para el hallazgo 1, y (iii) abrir un diseño propio
+para el hallazgo 2. Fuera de alcance y sin tocar: `scripts/validation_engine/`
+y los Gates.
