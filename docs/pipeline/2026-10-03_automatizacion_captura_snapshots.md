@@ -450,10 +450,44 @@ partir de `candles`/`periods` antes de pasarle los datos a
 `evaluate_ticker()` en `snapshot_autocapture.py`, que hoy reenvía el
 `"data"` crudo tal cual) tienen que replicar esa misma transformación.
 
-**Pregunta 7 añadida** a `check_autocapture_triggers.sh`: extrae
-`fetchAllNyse`/`fetchAllCrypto` completas (misma mecánica de balance de
-llaves que la Pregunta 5). **No se reintenta la verificación hasta
-tener esa salida y confirmar exactamente qué transformación falta** —
+**Pregunta 7 confirmada (04/10/2026, `docs/pipeline/pregunta7_salida.txt`,
+commit `6ec4f00`): `fetchAllNyse`/`fetchAllCrypto` NO derivan `price`
+ellas mismas.** Texto literal:
+
+```js
+async function fetchAllNyse(tickers, onProgress){
+  const results = {};
+  for (let i=0;i<tickers.length;i+=4){
+    const batch = tickers.slice(i,i+4);
+    await Promise.all(batch.map(async t=>{
+      try{ results[t] = {ind: await fetchNyseTicker(t), funda:null, insiders:null}; }
+      catch(e){ results[t] = {ind:null, funda:null, insiders:null, error: e.message||'error'}; }
+    }));
+    onProgress(...); await sleep(500);
+  }
+  // ... dos bucles más iguales, para funda (fetchFundamentals) e insiders (fetchInsiders)
+  return results;
+}
+```
+
+Es pura orquestación de batching (lotes de 4 tickers NYSE / 3 crypto,
+con `sleep(500)` entre lotes — rate limiting, no lógica de negocio) que
+**delega** en `fetchNyseTicker(t)`/`fetchCryptoTicker(t)` para `ind`, y
+por separado en `fetchFundamentals(t)`/`fetchInsiders(t)` para
+`funda`/`insiders`. **Ninguna de esas cuatro funciones está entre las
+piezas ya confirmadas** — exactamente el mismo patrón que ya pasó con
+`mkResult`/`mkNA` y `MAX_RAW_SCORE`: cada capa que se abre revela una
+más. La transformación sospechada (derivar `price` y el resto de
+indicadores a partir de `candles`/`periods`) casi con certeza vive
+dentro de `fetchNyseTicker()`/`fetchCryptoTicker()`, no en
+`fetchAllNyse`/`fetchAllCrypto`.
+
+**Pregunta 8 añadida** a `check_autocapture_triggers.sh`: extrae
+`fetchNyseTicker`, `fetchCryptoTicker`, `fetchFundamentals`,
+`fetchInsiders` y `sleep` (este último casi con toda seguridad un
+delay trivial de una línea, pero volcado igual — no asumido de
+memoria). **Sigue sin reintentarse la verificación navegador-vs-endpoint**
+hasta tener esa salida y confirmar la transformación exacta —
 instrucción explícita del usuario, mismo criterio que ya aplicó a
 `risk_pct`/`risk_per_share` y al shape de `scan-batch`: texto literal
 antes de tocar código, nunca una suposición más sobre otra suposición.

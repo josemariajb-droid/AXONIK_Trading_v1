@@ -408,6 +408,23 @@ for name in fetchAllNyse fetchAllCrypto; do
 done
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6 y 7 -- hasta"
-echo "    confirmar qué transformación aplica fetchAllNyse/fetchAllCrypto antes de"
+echo "=== Pregunta 8: fetchNyseTicker / fetchCryptoTicker / fetchFundamentals / fetchInsiders / sleep ==="
+echo "--- Pregunta 7 confirmó: fetchAllNyse/fetchAllCrypto NO derivan 'price'"
+echo "    ellas mismas -- son solo orquestación de batching (rate limiting,"
+echo "    progreso, sleep) que delega en fetchNyseTicker()/fetchCryptoTicker()"
+echo "    para 'ind', y en fetchFundamentals()/fetchInsiders() para 'funda'/"
+echo "    'insiders'. Ninguna de las cuatro estaba entre las piezas ya"
+echo "    confirmadas -- mismo patrón que ya pasó con mkResult/mkNA y"
+echo "    MAX_RAW_SCORE: cada capa revela una más. 'price' probablemente se"
+echo "    deriva dentro de fetchNyseTicker()/fetchCryptoTicker() a partir de"
+echo "    candles/periods. sleep() es casi con toda seguridad un delay trivial"
+echo "    de una línea, pero se vuelca igual -- no se asume de memoria. ---"
+for name in fetchNyseTicker fetchCryptoTicker fetchFundamentals fetchInsiders sleep; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name"
+done
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7 y 8 -- hasta"
+echo "    confirmar qué transformación aplica fetchNyseTicker/fetchCryptoTicker antes de"
 echo "    evaluateTicker(), no se reintenta la verificación navegador-vs-endpoint. ==="

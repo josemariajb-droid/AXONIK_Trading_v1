@@ -253,13 +253,25 @@ Abreviatura usada: **DOC-IDEM** =
     nuevo tiene que replicar esa misma transformación — no reenviar el
     `"data"` crudo de `scan-batch` tal cual, que es lo que hace hoy
     `evaluate_ticker()` en `snapshot_autocapture.py`.
-  - **Pregunta 7 añadida** a `check_autocapture_triggers.sh`: extrae
-    `fetchAllNyse`/`fetchAllCrypto` completas (misma mecánica de balance
-    de llaves que la Pregunta 5). **No se reintenta la verificación
-    navegador-vs-endpoint hasta tener esa salida y confirmar exactamente
-    qué transformación falta** — instrucción explícita del usuario,
-    para no repetir con "indicadores derivados" el mismo error que ya
-    pasó una vez asumiendo el shape de `scan-batch` sin leerlo.
+  - **Pregunta 7 confirmada (04/10/2026, `docs/pipeline/pregunta7_salida.txt`,
+    commit `6ec4f00`): `fetchAllNyse`/`fetchAllCrypto` NO derivan
+    `price` ellas mismas.** Son solo orquestación de batching (lotes de
+    4/3 tickers, `onProgress`, `sleep(500)` entre lotes) que delega en
+    `fetchNyseTicker(t)`/`fetchCryptoTicker(t)` para `ind`, y por
+    separado en `fetchFundamentals(t)`/`fetchInsiders(t)` para
+    `funda`/`insiders`. **Ninguna de esas cuatro está entre las piezas
+    ya confirmadas** — mismo patrón que ya pasó con `mkResult`/`mkNA` y
+    `MAX_RAW_SCORE`: cada capa revela una más. La transformación
+    sospechada (derivar `price` y el resto de indicadores a partir de
+    `candles`/`periods`) probablemente vive dentro de
+    `fetchNyseTicker()`/`fetchCryptoTicker()`, no en
+    `fetchAllNyse`/`fetchAllCrypto`.
+  - **Pregunta 8 añadida** a `check_autocapture_triggers.sh`: extrae
+    `fetchNyseTicker`, `fetchCryptoTicker`, `fetchFundamentals`,
+    `fetchInsiders` y `sleep` (este último casi con certeza trivial,
+    pero volcado igual, no asumido de memoria). **Sigue sin
+    reintentarse la verificación** hasta tener esa salida y confirmar
+    la transformación exacta.
 - **Sigue sin resolver, fuera del alcance de este paso:** de dónde salen
   `entry_price`/`stop_price`/`risk_per_share` (no están en el shape de
   `evaluate_ticker_logic.evaluate_ticker()`).
