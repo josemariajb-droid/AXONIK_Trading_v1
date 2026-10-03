@@ -129,7 +129,8 @@ Addendum 4): nada de "está desplegado" sin "está verificado".
 
 ```bash
 # 1. Dry-run: no hace ningún POST, solo registra qué habría enviado.
-#    Revisar que el universo de scanners y el payload tengan sentido.
+#    Revisar que el universo de tickers (14_UNIVERSO_TICKERS, ESTADO=ACTIVO)
+#    y el payload tengan sentido.
 python3 /opt/axonik/scripts/snapshot_autocapture.py --dry-run --force-window
 
 # 2. Una sola vez, sin --dry-run, fuera de la franja de los timers del

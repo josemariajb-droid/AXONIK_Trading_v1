@@ -318,6 +318,40 @@ Decision Engine real:
    `TICKER | MERCADO | ESTADO | FECHA_ALTA | NOTAS` y 0 filas de datos —
    la pueblas tú a mano con los tickers iniciales, como ya dijiste.
 
+**Hecho (04/10/2026), confirmado por el usuario contra el archivo
+descargado de Drive, no una suposición:** ambos pasos aplicados —
+`14_UNIVERSO_TICKERS` existe con esas cabeceras exactas, vacía; la fila
+de `00_README` también está.
+
+**Código actualizado en consecuencia:**
+`cargar_universo_de_tickers()` en `snapshot_autocapture.py` reemplaza a
+`cargar_universo_de_scanners()`/`02_SCANNERS`, leyendo
+`14_UNIVERSO_TICKERS` y filtrando `ESTADO='ACTIVO'`. Esto cierra también
+el hallazgo estructural de §1.8: al tener el universo como ticker+mercado
+directo (no scanner+ticker), `main()` pasa a hacer una llamada por
+*ticker*, que es el modelo real de `evaluateTicker()` — ya no hace falta
+el cruce artificial con scanners que tenía el diseño anterior. De paso se
+eliminó la reimplementación local (con el bug de unión de ramas en vez de
+prioridad estricta) de la detección de disparo: ahora se llama
+directamente a `evaluate_ticker_logic.detect_auto_trigger()`, ya
+corregido y con pruebas unitarias, en vez de mantener una tercera copia
+de esa lógica en el script.
+
+**Dos puntos siguen sin resolver, explícitamente fuera del alcance de
+este paso** (quedan para el paso de cablear el endpoint, §4 punto 1):
+- El shape de *petición* real de `POST /api/scan-batch`: se cambió el
+  campo de `"scanner_ids"` (ya no aplica, no hay scanners en el universo
+  nuevo) a `"tickers"`, por ser la lectura obvia dado el universo nuevo —
+  pero es una suposición, no una cita literal del Pydantic real.
+  Confirmar contra el código antes del `--dry-run`, mismo criterio que
+  con `risk_pct`/`risk_per_share`.
+- De dónde salen `entry_price`/`stop_price`/`risk_per_share` para
+  `construir_payload_snapshot()`: no están en el shape de
+  `evaluate_ticker_logic.evaluate_ticker()` (confirmado leyendo su
+  código — solo produce `score`/`verdict`/`factors` por estrategia).
+  `evaluate_ticker()` en `snapshot_autocapture.py` sigue siendo un
+  `NotImplementedError` explícito hasta que esto y el endpoint existan.
+
 **Nombre de la hoja:** `14_UNIVERSO_TICKERS`, siguiente número libre tras
 `13_INSTRUCCIONES` (00 a 13 ya existen), siguiendo la convención
 `NN_NOMBRE_EN_MAYUSCULAS` del resto del documento.

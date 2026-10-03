@@ -180,22 +180,36 @@ Abreviatura usada: **DOC-IDEM** =
   `cargar_universo_de_scanners()`/`02_SCANNERS.ESTADO` como fuente del
   universo para esta automatización (`02_SCANNERS` sigue existiendo para
   lo demás).
-- **BLOQUEADO (herramienta, no decisión) — crear la hoja real:** esta
-  sesión no tiene ninguna herramienta capaz de escribir en el Google
-  Sheet real (el `Google_Drive` MCP conectado aquí solo soporta
-  operaciones de archivo completo — crear archivo nuevo o cambiar
-  título/carpeta de uno existente, no añadir pestañas ni filas dentro de
-  un spreadsheet; las escrituras reales usan `gspread` con la service
-  account del Hetzner, sin acceso desde esta sesión). El contenido exacto
-  para pegar a mano (fila de `00_README` + cabecera de la pestaña nueva)
-  está listo en el diseño §1.9, a la espera de que el usuario lo aplique
-  él mismo.
-- **Para cerrarlo:** (1) aplicar a mano en el Excel real la fila de
-  `00_README` y la pestaña `14_UNIVERSO_TICKERS` (contenido listo en
-  diseño §1.9 — bloqueado para esta sesión por falta de herramienta, ver
-  arriba); (2) actualizar `cargar_universo_de_tickers()` en
-  `snapshot_autocapture.py` para leer de ahí filtrando `ESTADO=ACTIVO`;
-  (3) cablear `POST /api/evaluate-ticker` en el proxy con
+- **Hoja real creada (04/10/2026, por el usuario a mano):** confirmado
+  por el usuario contra el archivo descargado de Drive — `14_UNIVERSO_TICKERS`
+  existe en el Excel real (mismo ID de siempre) con cabeceras
+  `TICKER/MERCADO/ESTADO/FECHA_ALTA/NOTAS`, vacía; fila de `00_README`
+  también añadida. Bloqueante de herramienta (esta sesión no puede
+  escribir en el Google Sheet real — ver nota anterior) queda sin efecto
+  porque el usuario lo hizo directamente.
+- **Código actualizado (04/10/2026):** `cargar_universo_de_tickers()` en
+  `services/snapshot-autocapture/snapshot_autocapture.py` lee
+  `14_UNIVERSO_TICKERS` filtrando `ESTADO='ACTIVO'`, reemplaza a
+  `cargar_universo_de_scanners()`/`02_SCANNERS` del todo. Esto también
+  resuelve el hallazgo estructural de §1.8: con el universo en
+  ticker+mercado directo, el bucle de `main()` pasa a ser una llamada
+  por *ticker* (no por (ticker, scanner)), que es justo el modelo real
+  de `evaluateTicker()`. De paso se quitó la reimplementación local
+  (con bug de unión de ramas) de la detección de disparo y se usa
+  directamente `evaluate_ticker_logic.detect_auto_trigger()`, ya
+  corregido y con pruebas, en vez de mantener una tercera copia.
+  **Sigue sin resolver, fuera del alcance de este paso:** el shape de
+  petición real de `POST /api/scan-batch` (se cambió `"scanner_ids"` a
+  `"tickers"` por ser la lectura obvia con el universo nuevo, pero es
+  una suposición, no una cita literal — confirmar antes del
+  `--dry-run`); y de dónde salen `entry_price`/`stop_price`/
+  `risk_per_share` (no están en el shape de
+  `evaluate_ticker_logic.evaluate_ticker()`, confirmado leyendo su
+  código). `evaluate_ticker()` sigue siendo `NotImplementedError`
+  explícito, pendiente del paso (3).
+- **Para cerrarlo:** (1) ~~aplicar a mano la hoja y la fila de
+  `00_README`~~ hecho; (2) ~~actualizar `cargar_universo_de_tickers()`~~
+  hecho; (3) cablear `POST /api/evaluate-ticker` en el proxy con
   `evaluate_ticker_logic.py`; (4) verificación navegador-vs-endpoint con
   datos reales, obligatoria antes de marcar "verificado"; (5) confirmar
   si "mismo grupo" en `AUTO_MULTI` es de verdad `temporal_group` (lectura

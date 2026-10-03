@@ -11,55 +11,77 @@ NYSE_STRATEGIES/CRYPTO_STRATEGIES/applyEventAdjustments/tickerHardNo son
 aritmética pura sobre datos, sin dependencia de navegador:
 docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md (§1, cerrado).
 
+UNIVERSO DE TICKERS (04/10/2026) — ya no viene de 02_SCANNERS.ESTADO.
+
+  Decisión cerrada (diseño §1.9, BACKLOG entrada 5): el universo vive en
+  la hoja nueva 14_UNIVERSO_TICKERS del Decision Engine (TICKER, MERCADO,
+  ESTADO, FECHA_ALTA, NOTAS), ya creada en el Excel real con cabeceras y
+  sin poblar. cargar_universo_de_tickers() la lee filtrando
+  ESTADO='ACTIVO'. Esto además resuelve de raíz el hallazgo estructural
+  de §1.8: la evaluación real es una llamada por *ticker* (no por
+  (ticker, scanner)), así que el universo de tickers+mercado encaja
+  directamente con evaluate_ticker_logic.evaluate_ticker(ticker, ind,
+  funda, mode, ...) sin el cruce artificial con scanners que tenía el
+  diseño anterior. 02_SCANNERS sigue existiendo para lo que ya hacía
+  (catálogo de scanners), simplemente deja de ser la fuente de este
+  universo.
+
 ESTADO TRAS LA PREGUNTA 4 (confirmado contra el código real, no prosa):
 
-  - fetch_scan_batch(): CORREGIDO. Shape real: {"results": [{"ticker",
-    "timestamp", "data", "error"?}]}. "data" son indicadores EN BRUTO,
-    no un score precalculado — la asunción anterior de este script
-    (`ticker_data.get("score")`) era sencillamente incorrecta, no una
-    aproximación válida. Los errores por-ticker vienen dentro del array
-    ("error" por entrada), no como fallo global del batch — manejado
-    en el bucle principal, no como excepción.
+  - fetch_scan_batch(): shape de RESPUESTA confirmado: {"results":
+    [{"ticker", "timestamp", "data", "error"?}]}. "data" son indicadores
+    EN BRUTO, no un score precalculado. Los errores por-ticker vienen
+    dentro del array ("error" por entrada), manejado en el bucle
+    principal, no como excepción.
 
-  - construir_payload_snapshot(): CORREGIDO. El campo real es
-    risk_per_share, no risk_pct (confirmado contra SnapshotCreateRequest
-    literal). entry_price/stop_price sí coincidían.
+    El shape de PETICIÓN (qué campo espera el POST para indicar qué
+    tickers escanear) NO está confirmado contra el modelo Pydantic real
+    — solo tenemos el shape de la respuesta (Pregunta 4c). Antes de este
+    cambio se enviaba "scanner_ids" (ya no tiene sentido: no hay
+    scanners en el universo nuevo). Se cambia a "tickers" porque es la
+    lectura obvia dado el universo nuevo, pero es una SUPOSICIÓN, no una
+    cita literal — confirmar contra el cuerpo real de scan_batch() antes
+    del --dry-run (mismo tipo de hueco que ya causó el error de
+    risk_pct/risk_per_share).
 
-  - detect_auto_trigger(): CORREGIDO de un único umbral a las dos ramas
-    reales — ver evaluate_auto_trigger() más abajo:
-      AUTO_HIGH:  una sola estrategia con score >= 90 dispara por sí sola.
-      AUTO_MULTI: >=2 estrategias del MISMO GRUPO con score >= 80 cada una
-                  disparan juntas.
-    "Mismo grupo" se interpreta aquí como mismo temporal_group (swing/
-    intraday/medio) — es una LECTURA de la prosa del usuario sobre
-    detectAutoTrigger(), no una cita literal de esa función. Dado que ya
-    hubo un fallo real por fiarse de una paráfrasis (risk_pct vs.
-    risk_per_share), esto debería confirmarse contra el código real antes
-    de fiarse de esta agrupación en producción.
+  - construir_payload_snapshot(): el campo real es risk_per_share, no
+    risk_pct (confirmado contra SnapshotCreateRequest literal).
+    entry_price/stop_price sí coincidían. Ninguno de los tres aparece en
+    el shape de evaluate_ticker_logic.evaluate_ticker() (confirmado
+    leyendo su código: solo produce score/verdict/factors por
+    estrategia) — de dónde salen exactamente sigue sin resolver, ver
+    GAP REAL más abajo.
 
-GAP REAL DESCUBIERTO AL CORREGIR LO ANTERIOR — no uno de los tres puntos
-pedidos, pero lo que los tres puntos, juntos, dejan al descubierto:
+  - detect_auto_trigger(): ya no hay una reimplementación local en este
+    archivo. Se usa evaluate_ticker_logic.detect_auto_trigger(), que ya
+    tiene la prioridad estricta correcta (AUTO_MULTI antes que
+    AUTO_HIGH, con corte) y pruebas unitarias dedicadas — mantener una
+    segunda copia aquí es exactamente lo que ya introdujo el bug de
+    unión de ramas una vez.
+
+GAP REAL (sin cambios por este paso, sigue bloqueando la producción real):
 
   El cálculo del score en sí (evaluateTicker() + NYSE_STRATEGIES +
-  CRYPTO_STRATEGIES + applyEventAdjustments + tickerHardNo) NUNCA se portó
-  a Python. Solo se confirmó que esas cinco piezas son "limpias" (sin
-  document./window./canvas/fetch interno) — nunca se transcribió su
-  CONTENIDO. Este script dependía de que /api/scan-batch devolviera un
-  "score" ya calculado; el shape real confirmado demuestra que no es así.
+  CRYPTO_STRATEGIES + applyEventAdjustments + tickerHardNo) está portado
+  en evaluate_ticker_logic.py (22 piezas, con pruebas), pero TODAVÍA NO
+  está expuesto como POST /api/evaluate-ticker en market_data_proxy.py
+  (decisión de arquitectura 04/10/2026: single source of truth
+  server-side, no duplicar aquí). evaluate_ticker() de abajo sigue
+  siendo un NotImplementedError explícito hasta que ese endpoint exista
+  y se cablee la llamada real — no se inventa esa lógica aquí.
 
-  Por eso evaluate_ticker() de abajo es un NotImplementedError explícito,
-  no un valor por defecto razonable ni una aproximación. No se inventa
-  esa lógica aquí. Para cerrarlo de verdad hacen falta los CUERPOS
-  LITERALES de las cinco piezas (no un resumen en prosa — la lección de
-  risk_per_share es exactamente esa: una paráfrasis ya introdujo un error
-  real). Hasta que eso se porte, este script no puede ejecutarse en
-  producción — fallará de forma ruidosa e inmediata en el primer ticker,
-  a propósito, en vez de fingir un resultado.
+  Tampoco está resuelto de dónde salen entry_price/stop_price/
+  risk_per_share para construir_payload_snapshot() — no están en el
+  shape de evaluate_ticker_logic.evaluate_ticker() (confirmado arriba).
+  Pendiente junto con el cableado del endpoint.
 
 Protocolo antes de instalar el timer (no aplicable todavía, ver el gap de
 arriba):
-  1. Portar evaluate_ticker() con los cuerpos literales de las 5 piezas.
-  2. Confirmar la agrupación real de AUTO_MULTI ("mismo grupo").
+  1. Cablear POST /api/evaluate-ticker en market_data_proxy.py con
+     evaluate_ticker_logic.py, y resolver el origen de
+     entry_price/stop_price/risk_per_share.
+  2. Confirmar el shape de petición real de scan_batch() (campo
+     "tickers" es una suposición, no una cita literal — ver arriba).
   3. Ejecutar con --dry-run contra el proxy real y revisar el log.
   4. Ejecutar una vez sin --dry-run con --force-window fuera de la franja
      de los timers del evaluador, con un ticker de prueba (ZZTEST), y
@@ -80,6 +102,8 @@ from zoneinfo import ZoneInfo
 import gspread
 import requests
 
+import evaluate_ticker_logic as etl
+
 # --- Configuración ---------------------------------------------------------
 
 PROXY_BASE = os.environ.get("AXONIK_PROXY_BASE", "http://127.0.0.1:8002")
@@ -87,10 +111,11 @@ GOOGLE_CREDENTIALS_PATH = os.environ.get(
     "AXONIK_GOOGLE_CREDENTIALS", "/opt/axonik/scripts/credentials.json"
 )
 DECISION_ENGINE_SHEET_ID = os.environ.get("AXONIK_DECISION_ENGINE_SHEET_ID")
-SCANNERS_WORKSHEET = "02_SCANNERS"
+UNIVERSE_WORKSHEET = "14_UNIVERSO_TICKERS"
 
-# Decisión cerrada (diseño §1.4): scanners EN_PRUEBAS/PRODUCCION, no localStorage.
-ACTIVE_STATES = {"EN_PRUEBAS", "PRODUCCION"}
+# Decisión cerrada (diseño §1.9): hoja 14_UNIVERSO_TICKERS, ESTADO=ACTIVO.
+# Ya no se lee 02_SCANNERS ni localStorage para este propósito.
+ACTIVE_STATES = {"ACTIVO"}
 # Ventana operativa: regla dura, no un valor por defecto (instrucción explícita
 # del usuario: nada fuera de 16:00-18:00 Madrid sin que lo decida él).
 OPERATING_WINDOW = (16, 18)  # [16:00, 18:00) Europe/Madrid
@@ -101,11 +126,6 @@ OPERATING_WEEKDAYS = {0, 1, 2, 3, 4}  # datetime.weekday(): lunes=0 ... viernes=
 EXCLUDED_MARKETS = {"CRYPTO"}
 
 LOG_PATH = Path(os.environ.get("AXONIK_AUTOCAPTURE_LOG", "/var/log/axonik/snapshot_autocapture.log"))
-
-# Confirmados contra el código real (no estimación): dos ramas, no un umbral único.
-AUTO_HIGH_THRESHOLD = 90.0
-AUTO_MULTI_THRESHOLD = 80.0
-AUTO_MULTI_MIN_COUNT = 2
 
 
 def _setup_logging() -> logging.Logger:
@@ -125,27 +145,13 @@ log = _setup_logging()
 
 
 @dataclass(frozen=True)
-class ScannerDef:
-    scn_id: str
-    nombre: str
-    mercado: str
+class TickerUniverseEntry:
+    """Una fila de 14_UNIVERSO_TICKERS (diseño §1.9)."""
+    ticker: str
+    mercado: str  # NYSE | CRYPTO — mismo valor que evaluate_ticker_logic mode
     estado: str
-    tipo_op: str
-
-
-@dataclass(frozen=True)
-class TickerEvaluation:
-    """
-    Lo que evaluateTicker() produce para un (ticker, scanner) concreto —
-    todo lo que autoCaptureSnapshots() necesitaba para decidir y para
-    construir el payload de captura.
-    """
-    scn_id: str
-    score: float
-    temporal_group: str
-    entry_price: float
-    stop_price: float
-    risk_per_share: float
+    fecha_alta: str
+    notas: str
 
 
 def within_operating_window(now_madrid: datetime) -> bool:
@@ -156,11 +162,11 @@ def within_operating_window(now_madrid: datetime) -> bool:
     return start_hour <= now_madrid.hour < end_hour
 
 
-def cargar_universo_de_scanners() -> list[ScannerDef]:
+def cargar_universo_de_tickers() -> list[TickerUniverseEntry]:
     """
-    CERRADO (diseño §1.4): scanners EN_PRUEBAS/PRODUCCION de 02_SCANNERS,
-    leídos de Google Sheets vía gspread (misma librería que ya usa
-    snapshot_evaluator.py) — no localStorage de ningún navegador.
+    Diseño §1.9: hoja 14_UNIVERSO_TICKERS, filtrando ESTADO='ACTIVO', vía
+    gspread (misma librería y credenciales que ya usa snapshot_evaluator.py)
+    — no localStorage de ningún navegador, no 02_SCANNERS.
     Excluye además los de mercado CRYPTO (ver EXCLUDED_MARKETS).
     """
     if not DECISION_ENGINE_SHEET_ID:
@@ -168,123 +174,94 @@ def cargar_universo_de_scanners() -> list[ScannerDef]:
 
     gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
     sh = gc.open_by_key(DECISION_ENGINE_SHEET_ID)
-    ws = sh.worksheet(SCANNERS_WORKSHEET)
+    ws = sh.worksheet(UNIVERSE_WORKSHEET)
     rows = ws.get_all_records()
 
     universo = []
     for row in rows:
-        estado = str(row.get("ESTADO") or "").strip()
+        estado = str(row.get("ESTADO") or "").strip().upper()
         mercado = str(row.get("MERCADO") or "").strip().upper()
-        if estado not in ACTIVE_STATES:
+        ticker = str(row.get("TICKER") or "").strip()
+        if not ticker or estado not in ACTIVE_STATES:
             continue
         if mercado in EXCLUDED_MARKETS:
-            log.info(f"scanner {row.get('SCN_ID')} excluido de esta ventana: mercado={mercado}")
+            log.info(f"ticker {ticker} excluido de esta ventana: mercado={mercado}")
             continue
-        universo.append(ScannerDef(
-            scn_id=str(row.get("SCN_ID", "")),
-            nombre=str(row.get("NOMBRE", "")),
+        universo.append(TickerUniverseEntry(
+            ticker=ticker,
             mercado=mercado,
             estado=estado,
-            tipo_op=str(row.get("TIPO_OP", "")),
+            fecha_alta=str(row.get("FECHA_ALTA", "")),
+            notas=str(row.get("NOTAS", "")),
         ))
     return universo
 
 
-def fetch_scan_batch(scanners: list[ScannerDef]) -> dict:
+def fetch_scan_batch(universo: list[TickerUniverseEntry]) -> dict:
     """
-    CORREGIDO (Pregunta 4): shape real {"results": [{"ticker",
+    Shape de RESPUESTA confirmado (Pregunta 4): {"results": [{"ticker",
     "timestamp", "data", "error"?}]}. El manejo de "error" por-entrada es
-    responsabilidad del llamador (main()), no de esta función — un error
-    en un ticker no es un fallo del batch completo.
+    responsabilidad del llamador (main()), no de esta función.
+
+    Shape de PETICIÓN: "tickers" es una suposición (ver cabecera del
+    archivo), no una cita literal del Pydantic real de scan_batch() —
+    confirmar antes de usar esto contra el proxy real.
     """
     resp = requests.post(
         f"{PROXY_BASE}/api/scan-batch",
-        json={"scanner_ids": [s.scn_id for s in scanners]},
+        json={"tickers": [u.ticker for u in universo]},
         timeout=30,
     )
     resp.raise_for_status()
     return resp.json()
 
 
-def evaluate_ticker(ticker: str, data: dict, scanner: ScannerDef) -> TickerEvaluation:
+def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
     """
     NO IMPLEMENTADO — GAP REAL, no un valor por defecto.
 
-    Puerto de evaluateTicker() + NYSE_STRATEGIES/CRYPTO_STRATEGIES (según
-    scanner.mercado) + applyEventAdjustments + tickerHardNo, para UN
-    (ticker, scanner) concreto. Solo se confirmó que esas cinco piezas son
-    aritmética/orquestación pura sobre `data` (sin navegador) — nunca se
-    transcribió su contenido real.
-
-    Para implementar esto de verdad: pegar aquí los cuerpos LITERALES de
-    las cinco piezas (no un resumen en prosa — la paráfrasis de
-    risk_pct/risk_per_share ya introdujo un error real una vez).
+    Pendiente de cablear como llamada a POST /api/evaluate-ticker en
+    market_data_proxy.py (decisión de arquitectura 04/10/2026: single
+    source of truth server-side con evaluate_ticker_logic.py, no una
+    segunda copia en este script). El shape de retorno esperado, una vez
+    cableado, es el de evaluate_ticker_logic.evaluate_ticker(): un dict
+    con "strategies" (lista completa de las 7 NYSE o 3 crypto fijas por
+    `mercado`), "hardNo", "globalVerdict" — listo para pasar directo a
+    evaluate_ticker_logic.detect_auto_trigger().
     """
     raise NotImplementedError(
-        f"evaluate_ticker({ticker!r}, scanner={scanner.scn_id!r}): falta portar "
-        f"evaluateTicker()/NYSE_STRATEGIES/CRYPTO_STRATEGIES/applyEventAdjustments/"
-        f"tickerHardNo. Ver docstring y cabecera del archivo."
+        f"evaluate_ticker({ticker!r}, mercado={mercado!r}): falta cablear "
+        f"POST /api/evaluate-ticker. Ver docstring y cabecera del archivo."
     )
 
 
-def evaluate_auto_trigger(evaluations: dict[str, TickerEvaluation]) -> list[str]:
-    """
-    Puerto de detectAutoTrigger() — dos ramas confirmadas contra el
-    código real (no un único umbral, como se asumía antes de la
-    Pregunta 4):
-
-      AUTO_HIGH:  cualquier estrategia individual con score >= 90
-                  dispara por sí sola.
-      AUTO_MULTI: >=2 estrategias del MISMO GRUPO (aquí: mismo
-                  temporal_group — ver nota de "mismo grupo" en la
-                  cabecera del archivo, es una lectura, no una cita
-                  literal) con score >= 80 cada una disparan juntas.
-
-    Devuelve la lista de scn_id que disparan (vacía si no dispara nada).
-    Una estrategia puede aparecer por ambas ramas a la vez sin problema —
-    se deduplica.
-    """
-    triggered: set[str] = set()
-
-    for scn_id, ev in evaluations.items():
-        if ev.score >= AUTO_HIGH_THRESHOLD:
-            triggered.add(scn_id)
-
-    by_group: dict[str, list[str]] = {}
-    for scn_id, ev in evaluations.items():
-        if ev.score >= AUTO_MULTI_THRESHOLD:
-            by_group.setdefault(ev.temporal_group, []).append(scn_id)
-    for scn_ids in by_group.values():
-        if len(scn_ids) >= AUTO_MULTI_MIN_COUNT:
-            triggered.update(scn_ids)
-
-    return sorted(triggered)
-
-
-def construir_payload_snapshot(ticker: str, primary: TickerEvaluation,
-                                triggered_scn_ids: list[str], market: str,
-                                data_ts: str, snapshot_ts: str) -> dict:
+def construir_payload_snapshot(ticker: str, evaluation: dict, trigger: dict,
+                                market: str, data_ts: str, snapshot_ts: str) -> dict:
     """
     ticker/market/strategies/data_ts/snapshot_ts/temporal_group:
     CONFIRMADOS (DOC-IDEM Addendum 3 y 4). entry_price/stop_price:
     CONFIRMADOS contra SnapshotCreateRequest (Pregunta 4). risk_per_share:
     CORREGIDO — el campo real no es risk_pct.
 
-    `primary` son los datos de entry/stop/risk de la primera estrategia
-    disparada; asume que son iguales entre todas las estrategias
-    disparadas sobre el mismo ticker/vela — sin confirmar explícitamente,
-    pendiente junto con evaluate_ticker().
+    entry_price/stop_price/risk_per_share NO están en el shape de
+    evaluate_ticker_logic.evaluate_ticker() (confirmado leyendo su
+    código — solo produce score/verdict/factors) — de dónde salen sigue
+    sin resolver, pendiente junto con el cableado del endpoint. Se leen
+    aquí de `evaluation` con .get() a propósito, para que esto falle con
+    un KeyError/None visible en vez de fingir un valor, hasta que se
+    resuelva ese gap.
     """
+    primary = trigger["strategies"][0]
     return {
         "ticker": ticker,
         "market": market.lower(),
         "data_ts": data_ts,
         "snapshot_ts": snapshot_ts,
-        "temporal_group": primary.temporal_group,
-        "strategies": [{"id": scn_id} for scn_id in triggered_scn_ids],
-        "entry_price": primary.entry_price,
-        "stop_price": primary.stop_price,
-        "risk_per_share": primary.risk_per_share,
+        "temporal_group": primary["group"],
+        "strategies": [{"id": s["id"]} for s in trigger["strategies"]],
+        "entry_price": evaluation.get("entry_price"),
+        "stop_price": evaluation.get("stop_price"),
+        "risk_per_share": evaluation.get("risk_per_share"),
     }
 
 
@@ -324,23 +301,23 @@ def main() -> int:
                     f"— uso de prueba, no debe ocurrir desde el timer.")
 
     try:
-        scanners = cargar_universo_de_scanners()
+        universo = cargar_universo_de_tickers()
     except Exception:
-        log.exception("No se pudo cargar el universo de scanners desde 02_SCANNERS.")
+        log.exception("No se pudo cargar el universo de tickers desde 14_UNIVERSO_TICKERS.")
         return 1
 
-    log.info(f"Universo de scanners activos (EN_PRUEBAS/PRODUCCION, no-crypto): "
-             f"{[s.scn_id for s in scanners]}")
-    if not scanners:
-        log.warning("Universo de scanners vacío — revisar 02_SCANNERS antes de seguir.")
+    log.info(f"Universo de tickers activos (no-crypto): {[u.ticker for u in universo]}")
+    if not universo:
+        log.warning("Universo de tickers vacío — revisar 14_UNIVERSO_TICKERS antes de seguir.")
         return 0
 
     try:
-        datos_mercado = fetch_scan_batch(scanners)
+        datos_mercado = fetch_scan_batch(universo)
     except Exception:
         log.exception("Fallo al llamar a /api/scan-batch.")
         return 1
 
+    universo_por_ticker = {u.ticker: u for u in universo}
     snapshot_ts = now.astimezone(ZoneInfo("UTC")).isoformat()
     capturas = 0
 
@@ -351,30 +328,30 @@ def main() -> int:
                         f"(no es un fallo del batch completo).")
             continue
 
+        entry = universo_por_ticker.get(ticker)
+        if entry is None:
+            log.warning(f"scan-batch devolvió un ticker fuera del universo pedido: {ticker} — se omite.")
+            continue
+
         data = item.get("data") or {}
         # evaluate_ticker() lanza NotImplementedError a propósito — ver
         # cabecera del archivo. No se captura aquí: debe fallar ruidoso,
         # no silenciarse ticker a ticker.
-        evaluations = {
-            scanner.scn_id: evaluate_ticker(ticker, data, scanner)
-            for scanner in scanners
-        }
+        evaluation = evaluate_ticker(ticker, data, entry.mercado)
 
-        triggered = evaluate_auto_trigger(evaluations)
-        if not triggered:
+        trigger = etl.detect_auto_trigger(evaluation)
+        if not trigger:
             continue
 
-        primary = evaluations[triggered[0]]
-        scanner_mercado = next(s.mercado for s in scanners if s.scn_id == triggered[0])
         payload = construir_payload_snapshot(
-            ticker, primary, triggered, market=scanner_mercado,
+            ticker, evaluation, trigger, market=entry.mercado,
             data_ts=item.get("timestamp"), snapshot_ts=snapshot_ts,
         )
         try:
             if capture_signal(payload, dry_run=args.dry_run):
                 capturas += 1
         except Exception:
-            log.exception(f"Fallo al capturar {ticker} / {triggered} — se sigue con el resto del lote.")
+            log.exception(f"Fallo al capturar {ticker} / {trigger['type']} — se sigue con el resto del lote.")
 
     log.info(f"Fin de la corrida. Señales capturadas: {capturas}.")
     return 0
