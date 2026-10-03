@@ -181,6 +181,76 @@ completos en `services/snapshot-autocapture/README.md` (incluye el efecto
 colateral sobre el acceso manual a `/scanner` desde fuera del host, que
 queda como decisión aparte).
 
+### 1.7 Cadena de dependencias cerrada: 22 piezas, texto literal, fondo confirmado
+
+Tras 4 rondas de extracción dirigida (Preguntas 5, 5b, 5c, 5d — cada una
+disparada porque la anterior reveló una capa más), la cadena de
+dependencias de `evaluateTicker()` está cerrada con **22 piezas**, todas
+con texto literal (no resumen en prosa) en
+`docs/pipeline/pregunta5_5b_salida.txt`, `pregunta5c_salida.txt` y
+`pregunta5d_salida.txt`:
+
+| Capa | Piezas |
+|---|---|
+| Orquestación | `evaluateTicker`, `detectAutoTrigger` |
+| Selección por modo | `NYSE_STRATEGIES`, `CRYPTO_STRATEGIES` (arrays fijos de 7+3 funciones) |
+| Ajustes/veto | `applyEventAdjustments`, `tickerHardNo` |
+| Cálculo por estrategia | `evalST01`, `evalST05`, `evalST06`, `evalST09`, `evalST11`, `evalST15`, `evalST16`, `evalSC01`, `evalSC02`, `evalSCPB` |
+| Normalización/construcción | `mkResult`, `mkNA`, `finalizeVerdict`, `f` |
+| Configuración (fondo) | `STRATEGY_META`, `MAX_RAW_SCORE` |
+
+`MAX_RAW_SCORE` (Pregunta 5d) es un objeto literal de 11 pares
+`id: número` — sin llamadas, sin referencias a nada más. Es el fondo
+real: no hay quinta capa.
+
+**Puerto a Python entregado:** `services/snapshot-autocapture/evaluate_ticker_logic.py`,
+1:1 contra el texto literal de las 22 piezas. 10 pruebas en
+`test_evaluate_ticker_logic.py` (todas pasan), incluida una diseñada
+para fallar si alguien reintrodujera la unión de ramas en vez de la
+prioridad estricta `AUTO_MULTI`→`AUTO_HIGH` que `detectAutoTrigger`
+tiene en realidad (corregido respecto al diseño original de
+`evaluate_auto_trigger()` en `snapshot_autocapture.py`, que hacía unión).
+
+### 1.8 Hallazgo estructural al portar — decisión pendiente antes de cablear el endpoint
+
+Leyendo el texto literal de `evaluateTicker()` (no inferido):
+
+```js
+const fns = mode==='NYSE' ? NYSE_STRATEGIES : CRYPTO_STRATEGIES;
+let strategies = fns.map(fn=>{ ... });
+```
+
+**`evaluateTicker()` evalúa TODAS las estrategias fijas de un modo (7 NYSE
+o 3 crypto) en una sola llamada por *ticker* — no una llamada por
+(ticker, scanner).** `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES` son arrays
+fijos en el código; no se filtran por `02_SCANNERS.ESTADO` en tiempo de
+ejecución. Esto no coincide con el diseño de §2.5/BACKLOG entrada 5 tal
+como estaba: `cargar_universo_de_scanners()` (EN_PRUEBAS/PRODUCCION de
+`02_SCANNERS`) decidía *qué estrategias* evaluar — pero en el código real,
+qué estrategias se evalúan no es una decisión de datos en tiempo de
+ejecución, es fijo en `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`.
+
+Dato adicional: `ST-04` tiene entrada en `STRATEGY_META` y `MAX_RAW_SCORE`,
+pero **no está en el array `NYSE_STRATEGIES`** — hoy no se evalúa en
+ningún `autoCaptureSnapshots()`, aunque existe en la configuración y
+tiene una operación real en `05_OPERACIONES` (Fase 0A, GOOGL/ST-04, el
+único WIN plausible de toda la auditoría). No lo interpreto más allá de
+señalarlo — es un dato para ti, no una decisión que tome yo.
+
+**Lo que esto cambia:** "universo" para esta automatización probablemente
+tiene que ser *qué TICKERS evaluar* (una lista de acciones/criptos), no
+*qué estrategias* — las estrategias ya vienen fijas por `mode`. La
+decisión de `02_SCANNERS.ESTADO` (EN_PRUEBAS/PRODUCCION) no tiene un
+lugar obvio en este mecanismo tal como está escrito hoy en el navegador.
+
+**No he tocado `snapshot_autocapture.py` para resolver esto por mi
+cuenta.** Antes de cablear `POST /api/evaluate-ticker`, necesito que
+decidas: (a) de dónde sale la lista de tickers a evaluar (¿un universo
+fijo tipo S&P 500 + las criptos ya seguidas? ¿algo que ya exista en
+Postgres/Sheets?), y (b) qué hacemos con la lectura de `02_SCANNERS` que
+ya estaba diseñada — ¿se descarta, o sigue teniendo un papel distinto
+(p.ej. qué *tickers* trackea cada scanner, no qué función ejecutar)?
+
 ---
 
 ## 2. Diseño del timer systemd (condicionado a confirmar 1.2)

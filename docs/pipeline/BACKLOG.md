@@ -140,21 +140,35 @@ Abreviatura usada: **DOC-IDEM** =
   nuevo en `market_data_proxy.py` — single source of truth server-side, en
   vez de dos implementaciones (navegador y script Python) que puedan
   divergir en silencio, como ya pasó con `signal_hash` y con
-  `risk_pct`/`risk_per_share`. El puerto de las 5 piezas a Python sigue
-  haciendo falta una vez (cambia el destino: el endpoint, no el script),
-  con los cuerpos LITERALES, no un resumen en prosa. Obligatorio antes de
-  dar el endpoint por bueno: comparar su resultado contra lo que calcula
-  hoy `evaluateTicker()` en el navegador, mismos tickers, mismo momento,
-  resultado idéntico — no se marca "verificado" sin esa comparación
-  explícita. El navegador no se toca en esta tarea — ver entrada 6.
-- **Para cerrarlo:** (1) portar las cinco piezas a `POST /api/evaluate-ticker`
-  en el proxy, con sus cuerpos literales; (2) verificación navegador-vs-
-  endpoint con datos reales; (3) confirmar si "mismo grupo" en
-  `AUTO_MULTI` es de verdad `temporal_group` (lectura actual, no cita
-  literal); (4) aplicar el bind a `127.0.0.1`; (5) desplegar y verificar
-  siguiendo el protocolo del README (`--dry-run`, luego una corrida real
-  con ZZTEST fuera de la franja de los timers del evaluador) antes de
-  habilitar el timer.
+  `risk_pct`/`risk_per_share`.
+- **Cadena de dependencias cerrada (04/10/2026):** 4 rondas de extracción
+  dirigida (Preguntas 5/5b/5c/5d) llegaron a 22 piezas con texto literal,
+  fondo confirmado en `MAX_RAW_SCORE` (objeto literal, sin más llamadas).
+  Puerto a Python entregado en
+  `services/snapshot-autocapture/evaluate_ticker_logic.py`, con 10
+  pruebas unitarias (todas pasan) — detalle en el documento de diseño §1.7.
+- **BLOQUEADO por un hallazgo estructural nuevo, no uno de datos:**
+  `evaluateTicker()` real evalúa las 7 estrategias NYSE (o las 3 crypto)
+  fijas por `mode` en una sola llamada por *ticker* — no una llamada por
+  (ticker, scanner) como asumía el diseño de `cargar_universo_de_scanners()`.
+  `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES` son arrays fijos en el código, no
+  se filtran por `02_SCANNERS.ESTADO` en tiempo de ejecución. Falta
+  decidir de dónde sale el universo de *tickers* a evaluar (no de
+  estrategias) antes de cablear el endpoint a `snapshot_autocapture.py` —
+  ver documento de diseño §1.8. `ST-04` tiene entrada en `STRATEGY_META`/
+  `MAX_RAW_SCORE` pero no está en `NYSE_STRATEGIES` — no se evalúa hoy en
+  ningún `autoCaptureSnapshots()`, señalado sin interpretar más.
+- **Para cerrarlo:** (1) decidir el universo de tickers (bloqueante
+  actual); (2) cablear `POST /api/evaluate-ticker` en el proxy con
+  `evaluate_ticker_logic.py`; (3) verificación navegador-vs-endpoint con
+  datos reales, obligatoria antes de marcar "verificado"; (4) confirmar
+  si "mismo grupo" en `AUTO_MULTI` es de verdad `temporal_group` (lectura
+  actual del campo `group` de `STRATEGY_META`, consistente con el texto
+  literal de `detectAutoTrigger`, pero sin una comparación navegador-vs-
+  endpoint todavía); (5) aplicar el bind a `127.0.0.1`; (6) desplegar y
+  verificar siguiendo el protocolo del README (`--dry-run`, luego una
+  corrida real con ZZTEST fuera de la franja de los timers del
+  evaluador) antes de habilitar el timer.
 
 ### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
 
