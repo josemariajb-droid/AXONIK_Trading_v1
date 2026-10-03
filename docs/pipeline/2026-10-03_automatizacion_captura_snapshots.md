@@ -56,48 +56,63 @@ exige en los documentos anteriores.
   el único candidato entre los endpoints inventariados que puede alimentar un
   escaneo de ese tamaño).
 
-### 1.2 No confirmado — pendiente de leer el código real antes de implementar
+### 1.2 Estado tras la 1ª pasada (`docs/pipeline/check_autocapture_triggers.sh`)
 
-Tres preguntas concretas que DOC-IDEM no responde porque no era su objetivo,
-y que sí son el núcleo de tu pregunta 1:
+Tres preguntas originales, resueltas con el script de solo lectura contra el
+código real del Hetzner (ejecutado por el usuario, no por esta sesión — sigo
+sin acceso directo):
 
-1. **¿`detectAutoTrigger` es aritmética pura sobre datos que ya vienen del
-   servidor, o usa algo calculado solo en el navegador** (un indicador de una
-   librería de gráficos cargada en el cliente, un valor que depende del
-   DOM/canvas, etc.)? Si `/api/scan-batch` ya devuelve los indicadores
-   calculados (lo más probable, porque el proxy es el mismo proceso Python
-   que corre `snapshot_evaluator.py` y ya maneja indicadores en el servidor),
-   `detectAutoTrigger` es trasladable a Python sin más. Si depende de un
-   cálculo que solo existe en JS/DOM, hace falta un navegador real
-   (Playwright) o portar ese cálculo también.
-2. **¿De dónde saca `runScan()` el universo de tickers/scanners a evaluar?**
-   Si es una llamada a un endpoint del proxy (p.ej. una lista de scanners
-   activos desde Postgres), es trivial de replicar. Si es estado solo de la
-   UI (un `<select>` con checkboxes marcados a mano, guardado en
-   `localStorage` del navegador de quien use el scanner), un proceso headless
-   necesita su propia fuente de verdad para ese universo — probablemente
-   "todos los scanners `EN_PRUEBAS`/`PRODUCCION` de `02_SCANNERS`", pero eso
-   es una decisión de producto, no algo que se pueda inferir del código.
-3. **¿Hay algo de sesión/autenticación de navegador en las llamadas actuales**
-   (cookies, CSRF token) que un cliente headless tendría que replicar? DOC-IDEM
-   no menciona ninguno, y el Hallazgo 4 confirma que hoy el proxy no exige
-   autenticación en ningún endpoint — así que es improbable, pero no está
-   verificado explícitamente porque no era la pregunta de esa investigación.
+1. **`detectAutoTrigger` — CONFIRMADO: comparación pura.** Solo compara
+   scores ya calculados, no calcula nada por su cuenta. Pero esto desplaza la
+   pregunta, no la cierra: el score que compara lo produce `evaluateTicker()`,
+   que no apareció en la primera extracción. **Es el bloqueante real — ver
+   §1.4.**
+2. **Universo de tickers de `runScan()` — CONFIRMADO: `localStorage`, no un
+   endpoint.** Cerrado como decisión de producto, no como hallazgo técnico —
+   ver §1.4.
+3. **Sesión/autenticación de navegador** — sin revisar explícitamente en esta
+   pasada (el script la cubre, pero el resultado no se ha reportado todavía).
+   Sigue siendo improbable, coherente con que el proxy no exige autenticación
+   en ningún endpoint (BACKLOG entrada 2), pero no lo marco como cerrado
+   hasta tener ese resultado también.
 
-### 1.3 Conclusión de esta sección
+### 1.3 Conclusión de esta sección (actualizada)
 
-Con la evidencia disponible, **todo apunta a que el mecanismo es réplicable
-sin navegador** (llamadas HTTP + lógica determinista), no a que haga falta
-Playwright. Pero esa conclusión depende de las tres preguntas de 1.2, que no
-puedo cerrar desde aquí. **Antes de escribir una sola línea del script de la
-sección 2, alguien con acceso al Hetzner tiene que extraer literalmente**
-`autoCaptureSnapshots`, `detectAutoTrigger`, `runScan` y el bloque que
-construye el payload de `/api/scan-batch` (o lo que sea que alimenta el
-escaneo) **y pegarlos en un documento**, igual que se hizo con
-`compute_signal_hash` en DOC-IDEM. Es una tarea de solo lectura, de minutos,
-y es la que convierte este diseño de "probablemente viable sin navegador" a
-"confirmado". Lo marco como bloqueante de la implementación, no de esta
-revisión.
+Dos de las tres preguntas ya no son especulación. La tercera (`evaluateTicker`)
+es ahora el único bloqueante real para decidir "Python simple" vs.
+"Playwright" — ver §1.4 para el detalle y qué falta.
+
+---
+
+## 1.4 Addendum — 1ª pasada de verificación (universo de tickers cerrado, `evaluateTicker` pendiente)
+
+**Universo de tickers — CERRADO.** Confirmado que `runScan()` toma el
+universo de `localStorage` del navegador, no de un endpoint. **Decisión de
+producto (tuya, cerrada):** el proceso automático no depende de
+`localStorage` de ningún navegador concreto — usa como universo **los
+scanners en estado `EN_PRUEBAS` o `PRODUCCION` de `02_SCANNERS`**, leídos
+directamente de esa hoja/tabla en cada ejecución. Esto no es una inferencia
+ni una alternativa "probablemente correcta": es la decisión que cierra la
+pregunta 2 de §1.2, documentada aquí para que el esqueleto de §2.5
+(`cargar_universo_de_scanners()`) tenga una especificación concreta en vez de
+un comentario de "pendiente de confirmar". Implicación directa para la
+implementación: `cargar_universo_de_scanners()` debe leer `02_SCANNERS`
+filtrando por `ESTADO IN ('EN_PRUEBAS', 'PRODUCCION')` — no replicar ni leer
+`localStorage` de ninguna sesión de navegador.
+
+**`detectAutoTrigger` — sin cambios respecto a lo ya confirmado:**
+comparación pura sobre scores recibidos.
+
+**Bloqueante real, sin cerrar: `evaluateTicker()`.** Es la función que
+calcula los scores que `detectAutoTrigger` compara. `/api/scan-batch`
+confirmado que devuelve indicadores en bruto (no scores), así que el cálculo
+del score — la pieza que de verdad decide si hace falta Playwright o no —
+pasa por `evaluateTicker()`, que no estaba en el alcance de la primera
+extracción. `docs/pipeline/check_autocapture_triggers.sh` ya se ha extendido
+con una sección "Pregunta 1b: evaluateTicker() completa" (misma lógica que
+`detectAutoTrigger`: ¿aritmética pura sobre los indicadores recibidos, o algo
+calculado solo en el navegador?). Pendiente de que se vuelva a ejecutar y se
+reporte ese resultado antes de cerrar §1 por completo.
 
 ---
 
@@ -223,16 +238,20 @@ def main():
         log.info("Fuera de la ventana operativa 16:00-18:00 Madrid, no se captura nada.")
         return
 
-    # PENDIENTE DE CONFIRMAR (sección 1.2, pregunta 2): de dónde sale este universo.
+    # CERRADO (§1.4): 02_SCANNERS, ESTADO IN ('EN_PRUEBAS', 'PRODUCCION').
+    # No localStorage, no estado de ningún navegador concreto.
     universo = cargar_universo_de_scanners()
 
-    # PENDIENTE DE CONFIRMAR (sección 1.2, pregunta 1): payload real de scan-batch.
+    # PENDIENTE DE CONFIRMAR (§1.4): payload real de scan-batch.
     datos_mercado = requests.post(f"{PROXY_BASE}/api/scan-batch",
                                    json={"tickers": universo}, headers=auth_headers(TOKEN))
 
     for ticker_data in datos_mercado.json()[...]:
-        # PENDIENTE DE CONFIRMAR: puerto exacto de detect_auto_trigger() desde JS.
-        if detect_auto_trigger(ticker_data):
+        # BLOQUEANTE REAL (§1.4): evaluate_ticker() calcula el score que
+        # detect_auto_trigger() compara — no inventar esa lógica aquí hasta
+        # confirmarla contra el código real.
+        score = evaluate_ticker(ticker_data)
+        if detect_auto_trigger(score):
             resp = requests.post(f"{PROXY_BASE}/api/snapshots",
                                   json=construir_payload(ticker_data),
                                   headers=auth_headers(TOKEN))
@@ -333,9 +352,9 @@ decisión tuya, no como parte automática de este diseño.
 
 No construir el timer de la sección 2 antes de:
 
-1. **Confirmar 1.2** (extraer el código real de `autoCaptureSnapshots`,
-   `detectAutoTrigger`, `runScan`) — define si el script Python es viable
-   tal cual o si hace falta Playwright.
+1. **Confirmar `evaluateTicker()` (§1.4)** — único punto abierto que queda;
+   define si el script Python es viable tal cual o si hace falta Playwright.
+   El universo de tickers y `detectAutoTrigger` ya están cerrados.
 2. **Al menos el bind a 127.0.0.1 o el token de la sección 3** desplegado —
    tu propia instrucción: no más automatización sobre un endpoint abierto.
 

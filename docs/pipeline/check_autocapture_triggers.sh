@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Solo lectura. No escribe ni modifica nada en el servidor — solo
-# grep/sed/wc sobre archivos que ya existen. Resuelve las tres preguntas
+# grep/sed/wc sobre archivos que ya existen. Resuelve las preguntas
 # abiertas en docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md
-# §1.2 (si autoCaptureSnapshots()/detectAutoTrigger()/runScan() dependen
-# de algo que solo existe en el navegador), antes de implementar el timer
-# systemd de ese diseño.
+# §1.2 antes de implementar el timer systemd de ese diseño.
+#
+# Estado tras la 1ª pasada: detectAutoTrigger() confirmado como
+# comparación pura; universo de tickers confirmado desde localStorage
+# (decisión de producto ya tomada: usar EN_PRUEBAS/PRODUCCION de
+# 02_SCANNERS en su lugar). Bloqueante real restante: evaluateTicker(),
+# que calcula los scores que detectAutoTrigger compara.
 #
 # Uso:
 #   ./check_autocapture_triggers.sh
@@ -12,7 +16,8 @@
 #
 # Si algún archivo no es legible, probar con: sudo ./check_autocapture_triggers.sh
 #
-# Pega la salida completa de vuelta para cerrar las tres preguntas abiertas.
+# Pega la salida completa de vuelta — sobre todo la sección de
+# evaluateTicker() — para cerrar la última pregunta abierta.
 
 set -u
 
@@ -51,14 +56,25 @@ for f in "$SCANNER_HTML" "$PROXY_PY"; do
 done
 
 echo
-echo "=== Pregunta 1: detectAutoTrigger() completa ==="
-echo "--- ¿Compara solo campos numéricos recibidos como parámetro (aritmética"
-echo "    pura, replicable en Python), o depende de algo calculado solo en"
-echo "    el navegador (una librería de gráficos, el DOM/canvas)? ---"
+echo "=== Pregunta 1: detectAutoTrigger() completa — CONFIRMADO: comparación pura ==="
+echo "--- Ya confirmado en una pasada anterior: solo compara scores, no los"
+echo "    calcula. Se deja aquí por trazabilidad, no bloquea nada. ---"
 print_function "$SCANNER_HTML" 'function[[:space:]]+detectAutoTrigger|detectAutoTrigger[[:space:]]*='
 
 echo
-echo "=== Pregunta 2a: runScan() completa (de dónde sale el universo de tickers) ==="
+echo "=== Pregunta 1b: evaluateTicker() completa — BLOQUEANTE REAL ==="
+echo "--- Es la función que calcula los scores que detectAutoTrigger compara."
+echo "    /api/scan-batch devuelve indicadores en bruto, no scores, así que"
+echo "    el cálculo del score pasa por aquí. Misma pregunta que antes:"
+echo "    ¿aritmética pura sobre los indicadores recibidos (replicable en"
+echo "    Python), o depende de algo que solo existe en el navegador? ---"
+print_function "$SCANNER_HTML" 'function[[:space:]]+evaluateTicker|evaluateTicker[[:space:]]*='
+
+echo
+echo "=== Pregunta 2a: runScan() completa (CERRADA — se deja por trazabilidad) ==="
+echo "--- Universo confirmado desde localStorage, no un endpoint. Decisión de"
+echo "    producto ya tomada: el proceso automático usa los scanners"
+echo "    EN_PRUEBAS/PRODUCCION de 02_SCANNERS en su lugar, no localStorage. ---"
 print_function "$SCANNER_HTML" 'function[[:space:]]+runScan\b'
 
 echo
@@ -82,4 +98,4 @@ echo "    que detectAutoTrigger solo compara y no calcula nada él mismo. ---"
 print_function "$PROXY_PY" 'scan.batch|def[[:space:]]+scan_batch|async[[:space:]]+def[^(]*scan_batch'
 
 echo
-echo "=== Fin. Pega esta salida completa de vuelta para cerrar la sección 1.2 del diseño. ==="
+echo "=== Fin. Lo que falta cerrar: la sección 'evaluateTicker()' de arriba. ==="
