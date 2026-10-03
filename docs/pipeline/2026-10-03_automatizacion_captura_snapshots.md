@@ -251,6 +251,51 @@ Postgres/Sheets?), y (b) qué hacemos con la lectura de `02_SCANNERS` que
 ya estaba diseñada — ¿se descarta, o sigue teniendo un papel distinto
 (p.ej. qué *tickers* trackea cada scanner, no qué función ejecutar)?
 
+**Verificación de `11_LISTAS` como alternativa (04/10/2026) — descartada.**
+Contenido real leído directamente (`11_LISTAS.csv`, snapshot del
+21/09/2026): son 22 columnas `rng_*` de catálogo para desplegables
+(mercados, categorías, timeframes, indicadores, sectores...), ninguna con
+símbolos de ticker individuales. No sirve como universo de tickers tal
+cual existe hoy. Detalle en `docs/pipeline/BACKLOG.md`, entrada 5.
+
+### 1.9 Decisión (04/10/2026): hoja nueva `14_UNIVERSO_TICKERS` — esquema propuesto, sin crear todavía
+
+**Decisión tuya, cerrada:** el universo de tickers vive en una hoja nueva
+del Decision Engine, no en JSON estático ni en `localStorage`. Sustituye
+a `cargar_universo_de_scanners()` (§1.4/§2.5), que queda descartada junto
+con la lectura de `02_SCANNERS.ESTADO` para este propósito — `02_SCANNERS`
+sigue existiendo para lo que ya hacía (catálogo de scanners), simplemente
+deja de ser la fuente del universo de *tickers* de esta automatización.
+
+**Esquema propuesto (NO creado todavía — pendiente de tu revisión antes de
+tocar el Excel real):**
+
+| Columna | Tipo | Valores | Notas |
+|---|---|---|---|
+| `TICKER` | texto | p.ej. `AAPL`, `GOOGL`, `BTC` | símbolo exacto, el mismo que usan `/api/scan-batch` y `05_OPERACIONES` |
+| `MERCADO` | enum | `NYSE` \| `CRYPTO` | mismo valor que espera `evaluate_ticker_logic.evaluate_ticker(mode=...)` — decide qué array fijo de estrategias corre (`NYSE_STRATEGIES` o `CRYPTO_STRATEGIES`, §1.7) |
+| `ESTADO` | enum | `ACTIVO` \| `PAUSADO` | misma lógica de activación que ya usa `02_SCANNERS.ESTADO` (un valor "en marcha" filtra, el resto no) — enum reducido a dos valores porque aquí no hay un estado intermedio tipo `EN_PRUEBAS` |
+| `FECHA_ALTA` | fecha (ISO `AAAA-MM-DD`) | — | cuándo se añadió el ticker al universo; trazabilidad, no se usa para filtrar |
+
+**Nombre de la hoja:** `14_UNIVERSO_TICKERS`, siguiente número libre tras
+`13_INSTRUCCIONES` (00 a 13 ya existen), siguiendo la convención
+`NN_NOMBRE_EN_MAYUSCULAS` del resto del documento.
+
+**Lectura desde `snapshot_autocapture.py` (una vez creada la hoja):**
+`cargar_universo_de_tickers()` reemplaza a `cargar_universo_de_scanners()`:
+lee `14_UNIVERSO_TICKERS` vía `gspread` (misma librería y credenciales que
+ya usa el script), filtra `ESTADO == 'ACTIVO'`, y agrupa por `MERCADO` para
+decidir qué `mode` pasar a `evaluate_ticker()`. No hay cambio en cómo se
+llama al proxy aparte de esto — sigue siendo `POST /api/evaluate-ticker`
+(pendiente de cablear, punto (2) de "Para cerrarlo" en BACKLOG entrada 5).
+
+**No se crea la hoja en el Excel real todavía.** Esto es solo el esquema
+propuesto para tu revisión. Una vez aprobado: (a) se crea la hoja vacía
+(solo cabeceras) en el Decision Engine real, (b) tú la pueblas
+manualmente con los tickers que decidas — no lo hago yo —, y (c) se
+actualiza el código de `snapshot_autocapture.py` para leer de ahí en vez
+de `02_SCANNERS`.
+
 ---
 
 ## 2. Diseño del timer systemd (condicionado a confirmar 1.2)

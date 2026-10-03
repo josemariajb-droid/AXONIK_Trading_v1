@@ -168,19 +168,29 @@ Abreviatura usada: **DOC-IDEM** =
   (`ACCIONES_US`, `MOMENTUM`, `1m`, `LONG`, `EMA20`, `TECNOLOGIA`, `IBKR`,
   `NYSE`, `WIN`...). Ninguna columna contiene símbolos de ticker
   individuales (`AAPL`, `GOOGL`, `BTC`...) — es catálogo de categorías, no
-  una lista de tickers. Sigue sin existir ninguna fuente server-side del
-  universo de tickers a evaluar; habría que añadir una lista nueva a esa
-  hoja (o en otro sitio), decisión todavía no tomada.
-- **Para cerrarlo:** (1) decidir el universo de tickers (bloqueante
-  actual — descartado `11_LISTAS` tal cual existe hoy, ver verificación
-  arriba; hace falta añadir una lista nueva en algún sitio o elegir otra
-  fuente); (2) cablear `POST /api/evaluate-ticker` en el proxy con
-  `evaluate_ticker_logic.py`; (3) verificación navegador-vs-endpoint con
-  datos reales, obligatoria antes de marcar "verificado"; (4) confirmar
+  una lista de tickers. Decisión tomada a continuación: lista nueva en
+  hoja propia, no en `11_LISTAS`.
+- **Decisión del universo de tickers (04/10/2026):** hoja nueva
+  `14_UNIVERSO_TICKERS` en el Decision Engine (no JSON estático, no
+  `localStorage`). Columnas: `TICKER`, `MERCADO` (`NYSE`/`CRYPTO`),
+  `ESTADO` (`ACTIVO`/`PAUSADO`, misma lógica de activación que
+  `02_SCANNERS.ESTADO`), `FECHA_ALTA`. Esquema documentado en el diseño
+  §1.9, **pendiente de revisión** — la hoja no se ha creado todavía en el
+  Excel real y no se puebla con ningún ticker hasta que el usuario lo
+  decida manualmente. Sustituye a `cargar_universo_de_scanners()`/
+  `02_SCANNERS.ESTADO` como fuente del universo para esta automatización
+  (`02_SCANNERS` sigue existiendo para lo demás).
+- **Para cerrarlo:** (1) revisar y aprobar el esquema de
+  `14_UNIVERSO_TICKERS` (§1.9) y crear la hoja (solo cabeceras) en el
+  Excel real; (2) actualizar `cargar_universo_de_tickers()` en
+  `snapshot_autocapture.py` para leer de ahí filtrando `ESTADO=ACTIVO`;
+  (3) cablear `POST /api/evaluate-ticker` en el proxy con
+  `evaluate_ticker_logic.py`; (4) verificación navegador-vs-endpoint con
+  datos reales, obligatoria antes de marcar "verificado"; (5) confirmar
   si "mismo grupo" en `AUTO_MULTI` es de verdad `temporal_group` (lectura
   actual del campo `group` de `STRATEGY_META`, consistente con el texto
   literal de `detectAutoTrigger`, pero sin una comparación navegador-vs-
-  endpoint todavía); (5) aplicar el bind a `127.0.0.1`; (6) desplegar y
+  endpoint todavía); (6) aplicar el bind a `127.0.0.1`; (7) desplegar y
   verificar siguiendo el protocolo del README (`--dry-run`, luego una
   corrida real con ZZTEST fuera de la franja de los timers del
   evaluador) antes de habilitar el timer.
