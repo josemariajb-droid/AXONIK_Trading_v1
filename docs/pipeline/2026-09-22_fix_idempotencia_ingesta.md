@@ -2,8 +2,12 @@
 
 **Fecha:** 22/09/2026
 **Origen:** reconstrucción forense del bug de ST-16, `docs/auditoria/2026-09-22_auditoria_tarea0.md` §2
-**Estado: DISEÑO — no desplegado.** Ver "Bloqueo de acceso" al final. Nada de
-lo que sigue se ha aplicado en el n8n de producción (`n8n.axonikai.com`).
+**Estado: DISEÑO — no desplegado.** Nada de lo que sigue se ha aplicado en
+producción.
+**⚠ Premisa corregida el 03/10/2026:** el escritor de `05_OPERACIONES` **no es
+n8n**, y el duplicado de ST-16 no se origina en la escritura a Sheets. Leer
+primero el "Addendum 03/10/2026" al final: el diseño de nodos n8n de abajo no
+es aplicable tal cual.
 
 ## Contexto
 
@@ -174,3 +178,113 @@ Hasta que una de estas tres rutas se resuelva, **el pipeline sigue sin el
 fix** — acumular en PAPER mientras tanto reproduce el mismo riesgo que
 esta auditoría ya demostró (silenciosamente corrompe datos), tal como se
 señaló en la petición original.
+
+---
+
+## Addendum 03/10/2026 — investigación en el Hetzner (solo lectura)
+
+Sesión: Claude Code local en el Hetzner, con acceso directo a los contenedores
+`axonik_n8n`, `axonik_redis` y `axonik_postgres`. **No se ha modificado nada en
+producción** (n8n, Redis, Postgres, scripts y timers intactos). El estado sigue
+en `DISEÑO — no desplegado`, pendiente de revisión del usuario.
+
+### (a) La premisa n8n era incorrecta
+
+Exporté todos los workflows con el CLI del propio contenedor
+(`docker exec axonik_n8n n8n export:workflow --all`, sin API key): son 12
+workflows y **ninguno escribe en `05_OPERACIONES`**. El único nodo de Google
+Sheets está en `TradingView → 10_ALERTAS + Telegram` (`jl2souccwAWpVOBc`:
+Gmail Trigger → Parse Alert Code → Sheets Append en `10_ALERTAS` → Mark Read →
+Telegram). Ningún workflow tiene nodos de Redis. Por tanto, el patch "nodo
+Redis SET NX antes del Google Sheets Append" no tiene dónde aplicarse en n8n.
+
+### (b) Mecanismo real de escritura
+
+| Pieza | Detalle |
+|---|---|
+| Alta de la señal | `POST /api/snapshots` en `/opt/axonik/scripts/market_data_proxy.py` (`create_snapshot`, ~l.991) → `INSERT` en Postgres `signal_snapshots` |
+| Deduplicación existente | `signal_hash` con `UNIQUE CONSTRAINT` (`signal_snapshots_signal_hash_key`), más un SELECT previo y la captura de `UniqueViolation` |
+| Escritor de `05_OPERACIONES` | `/opt/axonik/scripts/snapshot_evaluator.py::sync_to_sheet()` (~l.502) → `gspread` `ws.append_row(...)` cuando un snapshot pasa a cerrado |
+| Planificación | systemd: `axonik-snapshot-eval-daily.timer` (18:30 todos los días, grupos swing, medio y crypto) y `axonik-snapshot-eval-intraday.timer` (L-V cada 30 min de 16:00 a 22:00, grupo intraday) |
+| Reintento | Columna `sheet_synced`. Si `sync_to_sheet()` devuelve `False`, queda en `FALSE` y el bloque "Reintento de sync pendiente" de `main()` lo vuelve a añadir en una ejecución posterior. Ese bloque no filtra por grupo, así que lo ejecutan ambos timers |
+
+### (c) Causa del duplicado de ST-16: no es `sheet_synced`, es el `signal_hash`
+
+**Evidencia de que el sync a Sheets no reenvió nada:**
+- `/var/log/axonik/snapshot_eval.log` cubre desde 2026-08-07 16:08 (antes del
+  incidente) hasta hoy, con 598 ejecuciones. Contiene **0** líneas
+  `sync a Google Sheets falló` y **0** líneas `reintento de sync`.
+- Ningún `id` de snapshot aparece cerrado (`CIERRA`) más de una vez.
+- Hoy no hay ningún snapshot cerrado con `sheet_synced=FALSE`.
+
+**Evidencia de que el duplicado nace al insertar el snapshot:** busqué en
+`signal_snapshots` las filas con el mismo `(ticker, data_ts, entry_price,
+estrategias)` y salen exactamente 4 pares, todos de ST-16:
+
+| ticker | data_ts | entry_price | ids | snapshot_ts (UTC) |
+|---|---|---|---|---|
+| AAPL | 2026-08-07 04:00 | 313.33 | 14 / 19 | 08-07 21:22:40 / 08-08 08:52:53 |
+| MSFT | 2026-08-07 04:00 | 499.99 | 15 / 20 | ídem |
+| NVDA | 2026-08-07 04:00 | 223.96 | 16 / 21 | ídem |
+| AVGO | 2026-08-07 04:00 | 427.76 | 17 / 22 | ídem |
+
+La diferencia es de 11h30m13s, que es exactamente el lag del informe forense.
+Cada uno de los 8 snapshots tiene un `signal_hash` distinto, se cerró una sola
+vez y se sincronizó una sola vez (`sheet_synced=t`). El evaluador escribió
+fielmente 8 filas porque había 8 snapshots.
+
+**Causa raíz** (`market_data_proxy.py::compute_signal_hash`, ~l.552):
+
+```python
+date_str = snapshot_dt.strftime("%Y%m%d")      # fecha de la EJECUCIÓN del escaneo
+raw = f"{ticker}|{market}|{date_str}|{ids_sorted}"
+```
+
+La clave de deduplicación usa la fecha UTC del momento en que corre el
+escaneo (`snapshot_ts`), no la de la vela de datos (`data_ts`). La primera
+corrida (08-07 21:22 UTC) generó `…|20260807|ST-16` y el re-escaneo de la
+mañana siguiente (08-08 08:52 UTC), sobre la **misma** vela de `data_ts`
+08-07 y con el mismo precio de entrada, generó `…|20260808|ST-16`. Al ser un
+hash distinto, el `UNIQUE` no saltó y entraron 4 snapshots nuevos. Cualquier
+re-escaneo que cruce la medianoche UTC antes de que exista una vela nueva
+reproduce el bug.
+
+### Latencias secundarias en `sync_to_sheet()` (no causaron ST-16, pero existen)
+
+1. `except Exception` amplio: devuelve `False` ante **cualquier** error. Si
+   `append_row` llegó a escribir en Google pero la respuesta falla (error de
+   red al leer, 5xx tras commit), la fila existe y `sheet_synced` queda en
+   `FALSE`, así que el siguiente reintento la duplica.
+2. Ventana sin atomicidad: si el proceso muere entre `append_row` y
+   `UPDATE … sheet_synced=TRUE` + `commit`, la siguiente ejecución la vuelve
+   a añadir.
+3. `gspread` 6.2.1 con `timeout=None` (por defecto): no hay timeout HTTP
+   explícito. Un cuelgue bloquearía la ejecución en lugar de fallar.
+4. `OP_ID = signal_hash[:12]` se escribe en la hoja, pero no se usa para
+   comprobar si ya existe antes del append.
+
+### Implicaciones para el diseño (pendiente de decisión, no aplicado)
+
+- **El guard Redis tal como está diseñado no habría bloqueado ST-16.** La
+  clave `…:{fecha}:{precio_entrada}` tomaría `fecha` de la columna `FECHA`,
+  que es `snapshot_ts.date()`, y ese valor es justo lo que difería entre
+  ambas escrituras (07 frente a 08). Para cubrir el caso, la clave tendría que
+  usar la fecha de `data_ts`.
+- **El punto de corrección natural es `compute_signal_hash`.** Usar
+  `data_dt` (o `data_ts` completo) en lugar de `snapshot_dt` hace que el
+  `UNIQUE` ya existente en Postgres sea el guard atómico de idempotencia, sin
+  añadir Redis. Contrapartida: dos señales legítimas sobre la misma vela
+  y con la misma estrategia pasarían a considerarse la misma. Es el
+  comportamiento deseado, pero conviene confirmarlo.
+- Las latencias 1 y 2 de `sync_to_sheet()` son un segundo vector
+  independiente, con la misma firma. Si se quiere cerrarlo, el guard natural
+  es por `OP_ID`/`signal_hash` en el punto del append, ya sea con Redis
+  `SET NX` sobre `signal_hash` o con una búsqueda de `OP_ID` en la hoja.
+- El protocolo de verificación de arriba (doble positivo, rama suprimida,
+  TTL, negativo) sigue siendo válido como criterio de cierre, pero hay que
+  reformularlo contra `POST /api/snapshots` y el evaluador en lugar de
+  contra "Execute Workflow" en n8n.
+
+**No ejecutado:** ningún paso del protocolo de verificación, porque no hay
+nada desplegado que verificar. Fuera de alcance y sin tocar:
+`scripts/validation_engine/` y los Gates.
