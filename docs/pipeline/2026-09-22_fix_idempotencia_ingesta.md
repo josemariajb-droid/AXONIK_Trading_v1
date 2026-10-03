@@ -2,8 +2,12 @@
 
 **Fecha:** 22/09/2026
 **Origen:** reconstrucción forense del bug de ST-16, `docs/auditoria/2026-09-22_auditoria_tarea0.md` §2
-**Estado: DISEÑO — no desplegado.** Nada de lo que sigue se ha aplicado en
-producción.
+**Estado:**
+- **Hallazgo 1** (causa de ST-16, `signal_hash`): **DESPLEGADO Y VERIFICADO
+  (03/10/2026, T0 20:12:14 CEST)**. La evidencia está en el Addendum 4.
+- **Hallazgos 2, 3 y 4:** siguen en DISEÑO o INFORME, sin desplegar.
+- **Diseño original con n8n y Redis** (secciones de abajo): no aplicado ni
+  aplicable.
 **⚠ Premisa corregida el 03/10/2026:** el escritor de `05_OPERACIONES` **no es
 n8n**, y el duplicado de ST-16 no se origina en la escritura a Sheets. Leer
 primero los addenda del 03/10/2026 al final. El diseño de nodos n8n de abajo no
@@ -538,6 +542,18 @@ ocurriera, la vela de una fila v1 tendría que seguir siendo la vela actual
 de un escaneo, y no es posible: todas las filas v1 son de velas de agosto y
 están cerradas (`OPEN` = 0, comprobado).
 
+> **⚠ ADVERTENCIA — condición de validez del riesgo residual.** Que no se
+> detecten duplicados entre filas v1 y v2 sobre la misma vela solo es
+> aceptable **mientras nadie reprocese en el sistema en vivo el histórico de
+> agosto de 2026** (las velas de las filas v1). Si en el futuro se
+> reprocesa, se reimporta o se re-escanea ese histórico contra
+> `POST /api/snapshots` en producción (por ejemplo, un backfill, un replay
+> para el Validation Engine o una reconstrucción del track record), hay que
+> **revisar esta decisión antes**: las señales v2 sobre esas velas no
+> colisionarían con sus gemelas v1 y entrarían duplicadas. La misma
+> advertencia queda como comentario en `compute_signal_hash` dentro de
+> `market_data_proxy.py`.
+
 **Comprobaciones previas ya hechas (solo lectura):**
 - El único consumidor de `signal_hash` aparte del propio proxy es
   `snapshot_evaluator.py` (`OP_ID = signal_hash[:12]`). La longitud y el
@@ -697,14 +713,136 @@ externas**, todas con respuesta **404**:
   directo, no por la API expuesta**. Es casi seguro que fue una limpieza de
   desarrollo, pero no está documentada en ningún sitio.
 
+### Comprobación previa al despliegue: el puerto 8002 sigue bloqueado (03/10/2026, 20:10 CEST)
+
+Lo exigió el usuario antes de tocar el servicio, para descartar que alguien
+reabriera el puerto después del cierre de las 18:21:
+
+- `ufw status numbered`: **activo**. Las únicas reglas `ALLOW IN` son para 22,
+  80, 5679/tcp y 8005/tcp (esta última solo desde 172.18.0.0/16 por
+  `br-61232fdd1ffa`). **No hay ninguna regla para 8002.**
+- `iptables -t {filter,nat,mangle,raw} -S`, `ip6tables` (las mismas 4 tablas)
+  y `nft list ruleset`: **0 coincidencias para `8002`**.
+- Políticas: `INPUT DROP` y `FORWARD DROP`, tanto en IPv4 como en IPv6.
+- Reglas `ACCEPT` de entrada que no dependen de un puerto: solo `-i lo` y
+  `RELATED,ESTABLISHED`. Ninguna regla genérica deja pasar 8002.
+- `/etc/ufw/user.rules` y `user6.rules` tienen como `mtime` las 18:21:27, la
+  hora del cierre. **No se han modificado desde entonces.**
+- Conexiones establecidas ahora mismo en `:8002`: 0. Peticiones HTTP en el
+  journal del proxy desde las 18:21: 0.
+- El proceso sigue escuchando en `0.0.0.0:8002` (pid 3539148). Ese es el
+  hallazgo 4, que queda sin cambios: el despliegue no altera el bind.
+
 ### Estado global
 
 | Hallazgo | Estado |
 |---|---|
-| 1 — `signal_hash` sobre la fecha de escaneo (causa de ST-16) | **PLAN listo (Addendum 3), pendiente de aprobación explícita** |
+| 1 — `signal_hash` sobre la fecha de escaneo (causa de ST-16) | **DESPLEGADO Y VERIFICADO (03/10/2026)**, ver el Addendum 4 |
 | 2 — `sync_to_sheet()` no idempotente | DISEÑO |
 | 3 — ejecuciones diaria e intradía simultáneas sin lock | DISEÑO (sin fix esbozado) |
 | 4 — proxy expuesto sin autenticación | INFORME, el usuario decide la prioridad |
 
-No hay nada desplegado en producción. Fuera de alcance y sin tocar:
+Solo se ha desplegado el hallazgo 1 (Addendum 4). Fuera de alcance y sin tocar:
 `scripts/validation_engine/` y los Gates.
+
+## Addendum 4 — 03/10/2026: despliegue y verificación del hallazgo 1
+
+**Resultado: las 3 pruebas pasan.** El hallazgo 1 queda en estado **DESPLEGADO Y
+VERIFICADO (03/10/2026)**. El plan del Addendum 3 se aprobó explícitamente con
+dos condiciones previas, y las dos se cumplieron antes de tocar el servicio:
+
+- La advertencia del riesgo residual v1/v2 está en el Addendum 3 y en el
+  docstring de `compute_signal_hash`.
+- El puerto 8002 sigue bloqueado: ver "Comprobación previa al despliegue"
+  más arriba, a las 20:10 CEST.
+
+### Despliegue
+
+| Paso | Evidencia |
+|---|---|
+| Copia de seguridad | `/opt/axonik/scripts/market_data_proxy.py.bak.20261003_201110`, con el mismo sha256 que el original antes del patch: `332a7cfc…1d55d66` |
+| Huella de las filas v1 | `SELECT id\|signal_hash\|status\|updated_at … ORDER BY id`: 12 filas (ids 14–26), sha256 `07c13682…ab86e5` |
+| Patch | Exactamente el diff del Addendum 3: firma `compute_signal_hash(…, data_dt, …)` con prefijo `v2\|` y `data_ts` en UTC al segundo, la llamada en `create_snapshot` con `data_dt` y el log `snapshot duplicado suprimido` cuando `created` es falso. Incluye el docstring con la advertencia de riesgo residual. |
+| Sintaxis | `python3 -m py_compile` correcto |
+| Reinicio | `systemctl restart axonik-market-proxy`, **T0 = 2026-10-03 20:12:14 CEST**, pid 706557. `GET /api/health` devuelve `{"status":"ok"}` |
+
+Las filas con `created_at >= T0` son v2. El bind sigue en `0.0.0.0:8002`
+(hallazgo 4, sin cambios).
+
+### Verificación (contra `127.0.0.1:8002`, sábado 20:12:35 CEST)
+
+No había ningún timer del evaluador previsto: la última ejecución fue a las
+18:30 y la siguiente es el domingo a las 18:30. Payload base: `ticker=ZZTEST`,
+`market=nyse`, `entry 100 / stop 95 / risk 5`, `temporal_group=swing`.
+
+| # | Prueba | `snapshot_ts` | `data_ts` | Estrategia | Esperado | Respuesta real | Resultado |
+|---|---|---|---|---|---|---|---|
+| P1 | Positivo 1 | 2026-10-02T21:22:40Z | 2026-10-02T04:00Z | ST-16 | `created:true` | `{"created":true,"id":27,"signal_hash":"1ab6c96a…fa79628d"}` | ✅ |
+| P2 | Positivo 2, **otro día UTC**, misma vela | 2026-10-03T08:52:53Z | 2026-10-02T04:00Z | ST-16 | `created:false`, `existing_id=27` | `{"created":false,"existing_id":27}` | ✅ |
+| — | Filas tras P1 y P2 | | | | 1 | 1 | ✅ |
+| N-A | Negativo: otra vela | 2026-10-05T21:00:00Z | 2026-10-05T04:00Z | ST-16 | `created:true` | `{"created":true,"id":28,…}` | ✅ |
+| N-B | Negativo: misma vela, otra estrategia | 2026-10-02T21:22:40Z | 2026-10-02T04:00Z | ST-05 | `created:true` | `{"created":true,"id":29,…}` | ✅ |
+| — | Filas tras los negativos | | | | 3 | 3 | ✅ |
+
+P1 y P2 reproducen exactamente el mecanismo de ST-16: el mismo payload, con un
+escaneo a las 21:22 UTC de D y otro a las 08:52 UTC de D+1. Con v1 habrían
+generado dos filas.
+
+**Hashes:** los 3 hashes que devolvió el servidor coinciden con un cálculo
+independiente de `sha256("v2|ZZTEST|nyse|<data_ts>|<ids>")`: `1ab6c96a41a03001`,
+`c903ea0dca596926` y `a616f61953509697`.
+
+**Prueba 2, rastro de la supresión:** aparece en el log de fichero y en el
+journal, y solo para P2:
+
+```
+/var/log/axonik/market_proxy.log:
+2026-10-03 20:12:35,494 INFO snapshot duplicado suprimido: ZZTEST market=nyse data_ts=2026-10-02T04:00:00+00:00 strategies=['ST-16'] existing_id=27
+```
+
+**TTL:** no aplica (no hay Redis). La unicidad en Postgres es permanente por
+diseño (Addendum 3).
+
+**Prueba 3, las filas v1 no cambian:** se recalculó la huella tras las pruebas,
+excluyendo ZZTEST. El sha256 sigue siendo `07c13682…ab86e5` y el `diff` está
+vacío: las 12 filas son idénticas, con el mismo hash, estado y `updated_at`.
+
+**Limpieza:**
+- `DELETE FROM signal_snapshots WHERE ticker='ZZTEST'` borró 3 filas.
+- Quedan 0 filas ZZTEST y 12 filas en total.
+- `alert_log` no tiene filas de los ids 27–29.
+- El evaluador no corrió entre la inserción y el borrado, así que ZZTEST no
+  ha podido llegar a `05_OPERACIONES`.
+- Efecto cosmético: la secuencia `signal_snapshots_id_seq` ha avanzado de 26
+  a 29, así que el próximo snapshot real será el id 30.
+
+### Rollback (si hiciera falta)
+
+```
+cp -p /opt/axonik/scripts/market_data_proxy.py.bak.20261003_201110 /opt/axonik/scripts/market_data_proxy.py
+systemctl restart axonik-market-proxy
+```
+
+Las filas v2 que se hayan creado mientras tanto seguirían siendo válidas. No hay
+esquema que revertir.
+
+### Lo que este despliegue NO cubre
+
+- **Hallazgo 2** (`sync_to_sheet()` no idempotente) y **hallazgo 3**
+  (ejecuciones diaria e intradía simultáneas sin lock): siguen abiertos, en
+  DISEÑO. Pueden producir filas duplicadas en `05_OPERACIONES` por una vía
+  distinta a la de ST-16.
+- **Hallazgo 4** (proxy en `0.0.0.0:8002` sin autenticación): sin cambios,
+  y protegido hoy solo por el firewall.
+- **Frontend:** `loadFollowedToday()` sigue reiniciándose a medianoche UTC,
+  así que tras esa hora el scanner vuelve a enviar el POST de las señales ya
+  capturadas. Ahora el servidor responde `created:false` y no se crea
+  ninguna fila. `autoCaptureSnapshots` solo cuenta las respuestas con
+  `created:true`, de modo que tampoco aparece un aviso falso de "señal
+  capturada". El único efecto es una petición redundante y una línea
+  `snapshot duplicado suprimido` en el log, que es el rastro deseado.
+- **Duplicados históricos de ST-16** (ids 19–22): siguen en la base de
+  datos, sin cambios. Su exclusión de métricas ya está decidida en la capa
+  de validación.
+- **Validación en tiempo real** de `is_valid_operation()` / `validation-api`
+  (sección anterior del documento): no se ha desplegado aquí.
