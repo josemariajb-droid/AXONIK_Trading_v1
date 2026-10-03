@@ -158,8 +158,23 @@ Abreviatura usada: **DOC-IDEM** =
   ver documento de diseño §1.8. `ST-04` tiene entrada en `STRATEGY_META`/
   `MAX_RAW_SCORE` pero no está en `NYSE_STRATEGIES` — no se evalúa hoy en
   ningún `autoCaptureSnapshots()`, señalado sin interpretar más.
+- **Verificación de `11_LISTAS` como fuente del universo de tickers
+  (04/10/2026):** descartada. Contenido real confirmado leyendo
+  `11_LISTAS.csv` (snapshot del 21/09/2026, exportado de
+  `AXONIK Decision Engine v2.xlsx`): la hoja es un catálogo de 22 columnas
+  `rng_*` (`rng_markets`, `rng_categories`, `rng_timeframes`,
+  `rng_strategy_type`, `rng_indicators`, `rng_sectors`, `rng_brokers`,
+  `rng_exchanges`, etc.) con valores enumerados para listas desplegables
+  (`ACCIONES_US`, `MOMENTUM`, `1m`, `LONG`, `EMA20`, `TECNOLOGIA`, `IBKR`,
+  `NYSE`, `WIN`...). Ninguna columna contiene símbolos de ticker
+  individuales (`AAPL`, `GOOGL`, `BTC`...) — es catálogo de categorías, no
+  una lista de tickers. Sigue sin existir ninguna fuente server-side del
+  universo de tickers a evaluar; habría que añadir una lista nueva a esa
+  hoja (o en otro sitio), decisión todavía no tomada.
 - **Para cerrarlo:** (1) decidir el universo de tickers (bloqueante
-  actual); (2) cablear `POST /api/evaluate-ticker` en el proxy con
+  actual — descartado `11_LISTAS` tal cual existe hoy, ver verificación
+  arriba; hace falta añadir una lista nueva en algún sitio o elegir otra
+  fuente); (2) cablear `POST /api/evaluate-ticker` en el proxy con
   `evaluate_ticker_logic.py`; (3) verificación navegador-vs-endpoint con
   datos reales, obligatoria antes de marcar "verificado"; (4) confirmar
   si "mismo grupo" en `AUTO_MULTI` es de verdad `temporal_group` (lectura
@@ -188,6 +203,33 @@ Abreviatura usada: **DOC-IDEM** =
   estable en uso automático (criterio a definir — p.ej. unas semanas sin
   incidencias), migrar `evaluateTicker()` del navegador a llamar a ese
   mismo endpoint en vez de calcular localmente, y retirar la copia JS.
+
+### 7. [MEDIA] `ST-04` no está en `NYSE_STRATEGIES` — no se evalúa en ningún escaneo
+
+- **Descripción:** la auditoría Fase 0A certificó una operación real con
+  `ST-04` (GOOGL, el único WIN de esa estrategia). Sin embargo, el array
+  real `NYSE_STRATEGIES` del navegador (confirmado por texto literal en
+  la Pregunta 5/5b, ver entrada 5 de este backlog) no incluye `ST-04` —
+  solo contiene `ST-01, ST-05, ST-06, ST-09, ST-11, ST-15, ST-16`. Como
+  `evaluateTicker()` recorre ese array fijo por `mode`, `ST-04` no se
+  evalúa hoy en ningún escaneo, ni manual (navegador) ni automático
+  (futuro `POST /api/evaluate-ticker`, que porta el mismo array). Es
+  independiente de la tarea de automatización: el hallazgo es que una
+  estrategia con un WIN certificado quedó fuera del escaneo activo, no un
+  problema de cómo se automatiza.
+- **Hallazgo original:** cruce entre la auditoría Fase 0A (operación
+  GOOGL/ST-04) y la extracción literal de `NYSE_STRATEGIES` en
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` §1.7
+  (entrada 5 de este backlog).
+- **Estado:** INFORME, sin decisión. No se ha confirmado si `ST-04`
+  tiene también entrada en `STRATEGY_META`/`MAX_RAW_SCORE` como las
+  demás (pendiente de revisar si hace falta para la decisión) ni por qué
+  se excluyó de `NYSE_STRATEGIES` en su momento.
+- **Para cerrarlo:** decidir si `ST-04` se reincorpora a
+  `NYSE_STRATEGIES` (y a partir de ahí se evalúa igual que las otras 7) o
+  se retira formalmente como estrategia (documentando que su único WIN
+  queda como histórico, sin escaneo futuro). Fuera del alcance de la
+  tarea de automatización de la entrada 5 — no bloquea su cierre.
 
 ## Cerrados
 
