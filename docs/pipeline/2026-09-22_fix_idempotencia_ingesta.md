@@ -7,7 +7,7 @@ producción.
 **⚠ Premisa corregida el 03/10/2026:** el escritor de `05_OPERACIONES` **no es
 n8n**, y el duplicado de ST-16 no se origina en la escritura a Sheets. Leer
 primero los addenda del 03/10/2026 al final. El diseño de nodos n8n de abajo no
-es aplicable tal cual: el diseño vigente es el del "Addendum 2".
+es aplicable tal cual: el diseño vigente es el del "Addendum 2", y el plan de migración está en el "Addendum 3".
 
 ## Contexto
 
@@ -470,33 +470,241 @@ y el fix del hallazgo 1 no lo cubre.
    defecto, y `_get_worksheet()` no fija ninguno. Una conexión colgada
    bloquea el proceso indefinidamente. Si se mata por timeout externo, se cae
    en el punto 3.
-5. **Ejecuciones concurrentes sin lock (riesgo nuevo, confirmado en el log).**
-   `axonik-snapshot-eval-daily` (18:30 todos los días) y
-   `axonik-snapshot-eval-intraday` (cada 30 min entre 16:00 y 21:30, L-V,
-   **incluido 18:30**) son units distintas sin exclusión mutua. Hay **44
-   ocasiones** en el log con dos `run start` en el mismo minuto (las más
-   recientes: 28/09 a 02/10, siempre a las 18:30). El bucle principal filtra
-   por grupo, pero **el bloque de reintento no**: si hubiera snapshots
-   pendientes, las dos ejecuciones simultáneas los añadirían a la vez a la
-   hoja.
+
+(La concurrencia entre las ejecuciones diaria e intradía se ha separado como
+hallazgo 3: es un bug independiente.)
 
 **Dirección del fix (solo esbozo; requiere su propio diseño y revisión):**
 
-- Exclusión mutua entre las dos ejecuciones: `flock` en el `ExecStart` de
-  ambas units sobre el mismo fichero de lock, o un lock de Redis `SET NX EX`
-  con TTL corto.
-- Comprobar `OP_ID` en la hoja antes del append (lee la columna `OP_ID` y
-  omite si ya está). Con el lock anterior, esta lectura previa deja de tener
-  condición de carrera, y es lo único que resuelve el caso ambiguo del punto 1.
+- Comprobar `OP_ID` en la hoja antes del append (leer la columna `OP_ID` y
+  omitir la fila si ya está). Es lo único que resuelve el caso ambiguo del
+  punto 1.
 - `set_timeout` explícito en el cliente de gspread.
 - Distinguir los errores ambiguos de los definitivos en el `except`, o
-  confiar en la comprobación de `OP_ID` para que el reintento sea inocuo
-  en ambos casos.
+  confiar en la comprobación de `OP_ID` para que el reintento sea inocuo en
+  ambos casos.
 
-### Estado
+**Estado del hallazgo 2: DISEÑO.** Fuera del despliegue del hallazgo 1.
 
-**DISEÑO, no implementado ni desplegado.** Pendiente de revisión del usuario
-de: (i) la clave `ticker+market+data_ts+estrategias` sin precio (§1.3),
-(ii) descartar Redis para el hallazgo 1, y (iii) abrir un diseño propio
-para el hallazgo 2. Fuera de alcance y sin tocar: `scripts/validation_engine/`
-y los Gates.
+### Hallazgo 3 — ejecuciones diaria e intradía simultáneas sin exclusión mutua
+
+**Estado: DISEÑO. Fuera del despliegue del hallazgo 1, se abordará en otra
+tarea. Todavía no hay esbozo de fix.**
+
+- `axonik-snapshot-eval-daily.timer` dispara a las 18:30 todos los días.
+  `axonik-snapshot-eval-intraday.timer` dispara de lunes a viernes cada 30
+  min entre 16:00 y 21:30, más a las 22:00, **lo que incluye las 18:30**.
+  Coinciden por tanto **todos los días laborables a las 18:30**, no solo los
+  lunes.
+- Son dos units `oneshot` distintas, sin ningún mecanismo de exclusión mutua.
+- **Evidencia:** hay 44 ocasiones en `/var/log/axonik/snapshot_eval.log` con
+  dos `run start` en el mismo minuto. Las más recientes son del 28/09 al 02/10,
+  siempre a las 18:30.
+- **Efecto potencial:** el bucle principal filtra por `temporal_group`, así que
+  cada ejecución evalúa sus propios grupos. En cambio, el bloque "Reintento de
+  sync pendiente" (`SELECT … WHERE sheet_synced=FALSE`) **no filtra por
+  grupo**. Si hay snapshots pendientes a esa hora, las dos ejecuciones los
+  leen y los añaden a `05_OPERACIONES` a la vez, generando filas duplicadas.
+  Hoy no se ha materializado: hay 0 snapshots pendientes y 0 fallos de sync en
+  el log.
+
+## Addendum 3 — 03/10/2026: plan de migración del hash (hallazgo 1)
+
+**Estado: PLAN. Pendiente de aprobación explícita del usuario. No se ha
+aplicado nada.**
+
+### Decisión: hash versionado, migración solo hacia delante, sin DDL
+
+- **No se modifica el esquema ni ninguna fila existente.** Las 12 filas
+  actuales (ids 14–26) conservan su `signal_hash` v1. Las filas nuevas se
+  insertan con un `signal_hash` v2 calculado sobre `data_ts`.
+- **Ambas versiones conviven en la misma columna y bajo el mismo
+  `UNIQUE (signal_hash)`.** Como el input del v2 empieza por `v2|`, un hash v1
+  y uno v2 no pueden coincidir salvo colisión de SHA-256.
+- **Se puede saber qué versión tiene cada fila sin añadir columnas:** las filas
+  con `created_at >= T0` (el momento del despliegue, que quedará registrado
+  aquí) son v2.
+
+**Por qué no las alternativas:**
+
+| Alternativa | Motivo para descartarla |
+|---|---|
+| Recalcular los hashes de las filas existentes | Requiere desactivar `trg_snapshot_immutable`, que es justo la garantía de integridad R1. Además, los 4 pares de ST-16 colisionarían en v2 (habría que borrar o excluir los ids 19–22). Y, sobre todo, **rompería el vínculo con la hoja**: `OP_ID = signal_hash[:12]` ya está escrito en `05_OPERACIONES` para las 12 filas, y recalcular el hash dejaría esas filas de la hoja sin correspondencia en la base de datos. |
+| Columna nueva `dedup_key` con su propio `UNIQUE` | Requiere DDL, más backfill, más gestionar la colisión de los 4 pares, a cambio de que la regla quede explícita en el esquema. No cubre ningún caso más que el hash v2. Se puede hacer más adelante si se quiere. |
+
+**Riesgo residual aceptado:** la convivencia v1/v2 no detectaría un
+duplicado entre una fila v1 y una v2 sobre **la misma vela**. Para que
+ocurriera, la vela de una fila v1 tendría que seguir siendo la vela actual
+de un escaneo, y no es posible: todas las filas v1 son de velas de agosto y
+están cerradas (`OPEN` = 0, comprobado).
+
+**Comprobaciones previas ya hechas (solo lectura):**
+- El único consumidor de `signal_hash` aparte del propio proxy es
+  `snapshot_evaluator.py` (`OP_ID = signal_hash[:12]`). La longitud y el
+  formato del v2 son idénticos, así que no hay impacto.
+- Ningún otro código recalcula el hash: `compute_signal_hash` solo se usa en
+  `create_snapshot`.
+- `signal_snapshots` tiene 0 filas `OPEN`, y el scanner no se usa desde el
+  08/08, así que no hay capturas en curso que puedan quedar a medias.
+- `/opt/axonik/scripts/` **no está bajo control de versiones**. La copia de
+  seguridad sigue la convención existente (`.bak.<timestamp>`) y el diff
+  exacto queda en este documento.
+
+### Patch (`/opt/axonik/scripts/market_data_proxy.py`)
+
+```python
+# 1. compute_signal_hash (~l.552): clave sobre la vela, no sobre el escaneo
+def compute_signal_hash(ticker: str, market: str, data_dt: datetime, strategy_ids: list) -> str:
+    """v2 (03/10/2026): identidad = ticker + market + vela (data_ts) + estrategias.
+    v1 usaba la fecha UTC de snapshot_ts → re-escaneos tras medianoche UTC sobre
+    la misma vela generaban hash nuevo (bug ST-16). Filas v1 conservan su hash."""
+    if data_dt.tzinfo is None:
+        data_dt = data_dt.replace(tzinfo=timezone.utc)
+    data_key = data_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ids_sorted = ",".join(sorted(strategy_ids))
+    raw = f"v2|{ticker.upper()}|{market.lower()}|{data_key}|{ids_sorted}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+# 2. create_snapshot (~l.1007): pasar data_dt en vez de snapshot_dt
+signal_hash = compute_signal_hash(req.ticker, req.market, data_dt, strategy_ids)
+
+# 3. Rastro de supresión: en las dos ramas que devuelven created:False
+#    (SELECT previo en _try_insert y el except UniqueViolation):
+logger.info(f"snapshot duplicado suprimido: {req.ticker.upper()} data_ts={data_dt.isoformat()} "
+            f"strategies={sorted(strategy_ids)} existing_id={...}")
+```
+
+No cambia nada más: ni el esquema, ni el trigger, ni el frontend, ni el
+evaluador.
+
+### Pasos de despliegue
+
+1. **Copia de seguridad:**
+   `cp market_data_proxy.py market_data_proxy.py.bak.<YYYYMMDD_HHMMSS>`,
+   más una huella de las filas existentes para comprobar después que no han
+   cambiado: `SELECT id, signal_hash FROM signal_snapshots ORDER BY id`,
+   guardada como evidencia.
+2. **Aplicar el patch** y comprobar la sintaxis con
+   `python3 -m py_compile market_data_proxy.py`.
+3. **Reiniciar:** `systemctl restart axonik-market-proxy` (`Restart=always`,
+   unos 2 s de corte, sin consumidores activos). Comprobar
+   `GET 127.0.0.1:8002/api/health` y anotar **T0**.
+4. **Verificación (§1.4)** contra `127.0.0.1:8002`, con `ticker=ZZTEST`,
+   `market=nyse`, `strategies=[{id:"ST-16"}]` y `data_ts=2026-10-02T04:00:00Z`.
+   Se hace **fuera de la franja de los timers** (hoy es sábado 03/10 y el
+   próximo timer es el diario del domingo a las 18:30):
+   - **Positivo doble:** POST con `snapshot_ts=2026-10-02T21:22:40Z` → se
+     espera `created:true`. POST idéntico con `snapshot_ts=2026-10-03T08:52:53Z`
+     (otro día UTC, como en ST-16) → se espera `created:false`, con el mismo
+     `existing_id`. Debe quedar 1 fila `ZZTEST`.
+   - **Supresión:** la línea `snapshot duplicado suprimido` aparece en
+     `market_proxy.log` y en el journal para el segundo POST.
+   - **Negativo A:** mismo payload con `data_ts=2026-10-05T04:00:00Z` → se
+     espera `created:true`.
+   - **Negativo B:** mismo `data_ts` que el positivo y `strategies=[{id:"ST-05"}]`
+     → se espera `created:true`. Deben quedar 3 filas `ZZTEST`.
+   - **TTL:** no aplica, porque no hay Redis. La unicidad en Postgres es
+     permanente por diseño.
+   - **Las filas v1 no cambian:** se repite la huella del paso 1 y debe ser
+     idéntica.
+5. **Limpieza:** `DELETE FROM signal_snapshots WHERE ticker='ZZTEST'` (el
+   trigger solo bloquea UPDATE) y un `SELECT count(*)` que devuelva 0. ZZTEST
+   no puede llegar a `05_OPERACIONES`: solo se sincronizan snapshots cerrados,
+   y se borran antes de cualquier ejecución del evaluador.
+6. **Registro:** resultado de cada paso, T0 y respuestas JSON en un addendum.
+   Solo entonces se cambia el estado del hallazgo 1 a
+   `DESPLEGADO Y VERIFICADO (fecha)`. Los hallazgos 2, 3 y 4 mantienen su
+   estado.
+
+**Rollback:** restaurar el `.bak` y reiniciar el servicio. Las filas v2 que
+se hayan creado mientras tanto siguen siendo válidas (hashes únicos) y no hay
+esquema que revertir.
+
+## Hallazgo 4 — `market_data_proxy` expuesto en `0.0.0.0:8002` sin autenticación
+
+**Estado: INFORME, no corregido. Es independiente de la tarea de
+idempotencia y la prioridad la decide el usuario.**
+
+**Proceso que escucha:**
+- `/usr/bin/python3 /opt/axonik/scripts/market_data_proxy.py` (FastAPI con
+  uvicorn), como **root**, gestionado por la unit `axonik-market-proxy.service`
+  (`Restart=always`).
+- PID actual 3539148, arrancado el 30/09/2026 a las 06:53 CEST.
+- `uvicorn.run(app, host="0.0.0.0", port=8002)`. Las cuatro copias `.bak` del
+  07/08/2026 ya tenían `0.0.0.0`.
+- La unit se creó el 07/08/2026 a las 16:00.
+
+Escucha en todas las interfaces desde que existe el proxy, es decir, **desde
+el 07/08/2026**.
+
+**Firewall y ventana de exposición real:**
+- La regla `ufw allow 8002` venía de la época de `openwa`
+  (`docker run … -p 8002:8002 openwa/wa-automate`, en el historial de bash).
+  Cuando el proxy reutilizó el puerto, quedó expuesto a internet.
+- La regla **se eliminó el 03/10/2026 a las 18:21 CEST** en una sesión de
+  hardening (`ufw --force delete allow 8002`). Hoy `ufw-user-input` no tiene
+  ninguna regla para 8002 y la política de `INPUT` es DROP.
+- **Ventana de exposición: del 07/08/2026 al 03/10/2026 a las 18:21, unas 8
+  semanas.**
+- Sigue escuchando en `0.0.0.0`, así que la protección depende solo del
+  firewall.
+
+**Superficie expuesta.** No hay autenticación en ningún endpoint (ni
+`Depends` ni API key) y CORS tiene `allow_origins=["*"]`. Endpoints de
+escritura:
+- `POST /api/snapshots`: crea señales.
+- `PUT /api/snapshots/{id}/close`: cierra o altera el resultado de un
+  snapshot.
+- `DELETE /api/snapshots/{id}`: solo afecta a snapshots `OPEN` del día UTC
+  en curso.
+- `POST /api/circuit-breaker/breach`: inserta en `alert_log`.
+- `POST /api/scan-batch` y `/api/fundamentals-batch`: consumen cuota de
+  yfinance.
+
+Además se sirve `/scanner` (el HTML).
+
+**Tráfico observado.** El journal de la unit solo conserva desde el
+25/09/2026. Entre el 25/09 y el 28/09 hay **53 peticiones de unas 15 IPs
+externas**, todas con respuesta **404**:
+- `GET /`, `/favicon.ico`, `/robots.txt`, `/sitemap.xml`, `/login`,
+  `/.well-known/security.txt` y `/app-ads.txt`.
+- Una serie repetida y muy característica de escáner de servidores
+  MCP/JSON-RPC: `POST /mcp`, `POST /jsonrpc`, `POST /`, `GET /sse`,
+  `/mcp-sse` y `/get_server_info`. Sale sobre todo del rango `66.132.x.x`,
+  cada 1–2 días.
+- **Ni una sola petición a `/api/*` ni a `/scanner`.** Solo sondeos genéricos
+  de escáneres de internet; ningún intento de escribir datos.
+- Hay un `Invalid HTTP request` (TLS o basura contra un puerto HTTP), que es
+  típico de escáneres.
+- Del reinicio del 30/09 al cierre del puerto no hay peticiones registradas.
+
+**Integridad de los datos (lo que el log no cubre):**
+- **Del 07/08 al 25/09 no hay log de accesos.** Lo verifiqué en la base de
+  datos:
+  - Las 12 filas de `signal_snapshots` tienen `created_at` del 07–08/08,
+    todas explicables por los dos escaneos conocidos.
+  - Todos los `updated_at` coinciden con las ejecuciones del evaluador
+    (16:30 UTC, que son las 18:30 CEST).
+  - `alert_log` (37 filas) solo contiene tipos generados por el evaluador
+    a sus horas, y **0 entradas de circuit-breaker**.
+  - **No hay rastro de escrituras ajenas**, aunque no se puede descartar
+    tráfico de solo lectura en ese periodo.
+- **Faltan los ids 1–13 y 18.** Según el log del evaluador eran datos de
+  desarrollo del 07/08: valores absurdos como `mfe_r=52.6` y `result_r=18.2`,
+  más un `SYNTH id=9999`. Desaparecen tras las 18:37 de ese día, antes del
+  primer lote real (21:22 UTC). Varios estaban cerrados, y la API no
+  permite borrar snapshots cerrados (403), así que **se borraron por SQL
+  directo, no por la API expuesta**. Es casi seguro que fue una limpieza de
+  desarrollo, pero no está documentada en ningún sitio.
+
+### Estado global
+
+| Hallazgo | Estado |
+|---|---|
+| 1 — `signal_hash` sobre la fecha de escaneo (causa de ST-16) | **PLAN listo (Addendum 3), pendiente de aprobación explícita** |
+| 2 — `sync_to_sheet()` no idempotente | DISEÑO |
+| 3 — ejecuciones diaria e intradía simultáneas sin lock | DISEÑO (sin fix esbozado) |
+| 4 — proxy expuesto sin autenticación | INFORME, el usuario decide la prioridad |
+
+No hay nada desplegado en producción. Fuera de alcance y sin tocar:
+`scripts/validation_engine/` y los Gates.
