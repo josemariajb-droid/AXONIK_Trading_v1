@@ -63,10 +63,12 @@ código real del Hetzner (ejecutado por el usuario, no por esta sesión — sigo
 sin acceso directo):
 
 1. **`detectAutoTrigger` — CONFIRMADO: comparación pura.** Solo compara
-   scores ya calculados, no calcula nada por su cuenta. Pero esto desplaza la
-   pregunta, no la cierra: el score que compara lo produce `evaluateTicker()`,
-   que no apareció en la primera extracción. **Es el bloqueante real — ver
-   §1.4.**
+   scores ya calculados, no calcula nada por su cuenta. Esto desplazó la
+   pregunta a `evaluateTicker()` (quien produce esos scores), que en la 2ª
+   pasada **también se confirmó como orquestación pura sobre datos**. El
+   bloqueante real que queda son las cuatro piezas que `evaluateTicker()`
+   llama (`NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`,
+   `tickerHardNo`) — ver §1.4, verificación en curso.
 2. **Universo de tickers de `runScan()` — CONFIRMADO: `localStorage`, no un
    endpoint.** Cerrado como decisión de producto, no como hallazgo técnico —
    ver §1.4.
@@ -78,13 +80,14 @@ sin acceso directo):
 
 ### 1.3 Conclusión de esta sección (actualizada)
 
-Dos de las tres preguntas ya no son especulación. La tercera (`evaluateTicker`)
-es ahora el único bloqueante real para decidir "Python simple" vs.
-"Playwright" — ver §1.4 para el detalle y qué falta.
+Dos de las tres preguntas originales ya no son especulación, y
+`evaluateTicker()` tampoco. Lo que decide "Python simple" vs. "Playwright"
+ahora es un grep acotado a cuatro piezas concretas, no una función más por
+confirmar — ver §1.4 para el detalle y qué falta.
 
 ---
 
-## 1.4 Addendum — 1ª pasada de verificación (universo de tickers cerrado, `evaluateTicker` pendiente)
+## 1.4 Addendum — 1ª y 2ª pasada de verificación
 
 **Universo de tickers — CERRADO.** Confirmado que `runScan()` toma el
 universo de `localStorage` del navegador, no de un endpoint. **Decisión de
@@ -103,16 +106,25 @@ filtrando por `ESTADO IN ('EN_PRUEBAS', 'PRODUCCION')` — no replicar ni leer
 **`detectAutoTrigger` — sin cambios respecto a lo ya confirmado:**
 comparación pura sobre scores recibidos.
 
-**Bloqueante real, sin cerrar: `evaluateTicker()`.** Es la función que
-calcula los scores que `detectAutoTrigger` compara. `/api/scan-batch`
-confirmado que devuelve indicadores en bruto (no scores), así que el cálculo
-del score — la pieza que de verdad decide si hace falta Playwright o no —
-pasa por `evaluateTicker()`, que no estaba en el alcance de la primera
-extracción. `docs/pipeline/check_autocapture_triggers.sh` ya se ha extendido
-con una sección "Pregunta 1b: evaluateTicker() completa" (misma lógica que
-`detectAutoTrigger`: ¿aritmética pura sobre los indicadores recibidos, o algo
-calculado solo en el navegador?). Pendiente de que se vuelva a ejecutar y se
-reporte ese resultado antes de cerrar §1 por completo.
+**`evaluateTicker()` — 2ª pasada, CONFIRMADO: orquestación pura sobre `ctx`
+(datos), sin DOM.** Recibido y revisado: no toca nada propio del navegador,
+solo organiza el cálculo del score a partir del contexto de datos que
+recibe. Pero `evaluateTicker()` llama a otras piezas
+(`NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`,
+`tickerHardNo`) que no se habían revisado todavía — confirmar que
+`evaluateTicker()` en sí es limpia no basta si delega en algo que no lo es.
+
+**Verificación dirigida, en curso (no función por función, un grep acotado
+a las cuatro piezas que faltan):** `docs/pipeline/check_autocapture_triggers.sh`
+ahora tiene una sección "Pregunta 1c" que localiza las definiciones de esas
+cuatro piezas (con balance de llaves/corchetes, no una ventana fija de
+líneas — las de estrategias pueden ser grandes) y busca dentro de cada una
+`document.`, `window.`, `canvas`, `chart.`, `getContext`, o un `fetch(`
+interno. Si las cuatro salen limpias, el bloqueante queda cerrado del todo:
+`evaluateTicker()` y todo lo que llama es aritmética pura sobre datos,
+portable a Python sin Playwright. Si alguna no sale limpia, el script
+vuelca esa función completa para revisarla específicamente. **Resultado de
+esta pasada: pendiente de ejecutar.**
 
 ---
 
@@ -352,9 +364,11 @@ decisión tuya, no como parte automática de este diseño.
 
 No construir el timer de la sección 2 antes de:
 
-1. **Confirmar `evaluateTicker()` (§1.4)** — único punto abierto que queda;
-   define si el script Python es viable tal cual o si hace falta Playwright.
-   El universo de tickers y `detectAutoTrigger` ya están cerrados.
+1. **Confirmar las cuatro piezas de la Pregunta 1c (§1.4)**
+   (`NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`,
+   `tickerHardNo`) — único punto abierto que queda; define si el script
+   Python es viable tal cual o si hace falta Playwright. El universo de
+   tickers, `detectAutoTrigger` y `evaluateTicker` ya están cerrados.
 2. **Al menos el bind a 127.0.0.1 o el token de la sección 3** desplegado —
    tu propia instrucción: no más automatización sobre un endpoint abierto.
 

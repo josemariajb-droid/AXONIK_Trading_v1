@@ -4,11 +4,15 @@
 # abiertas en docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md
 # §1.2 antes de implementar el timer systemd de ese diseño.
 #
-# Estado tras la 1ª pasada: detectAutoTrigger() confirmado como
-# comparación pura; universo de tickers confirmado desde localStorage
-# (decisión de producto ya tomada: usar EN_PRUEBAS/PRODUCCION de
-# 02_SCANNERS en su lugar). Bloqueante real restante: evaluateTicker(),
-# que calcula los scores que detectAutoTrigger compara.
+# Estado tras la 2ª pasada: detectAutoTrigger() y evaluateTicker()
+# confirmados como orquestación/aritmética pura sobre datos; universo de
+# tickers confirmado desde localStorage (decisión de producto ya tomada:
+# usar EN_PRUEBAS/PRODUCCION de 02_SCANNERS en su lugar). Verificación
+# final pendiente: grep dirigido (Pregunta 1c) en las cuatro piezas que
+# evaluateTicker() llama (NYSE_STRATEGIES, CRYPTO_STRATEGIES,
+# applyEventAdjustments, tickerHardNo) buscando document./window./canvas/
+# chart./getContext/fetch( interno. Limpio en las cuatro = bloqueante
+# cerrado del todo, sin Playwright.
 #
 # Uso:
 #   ./check_autocapture_triggers.sh
@@ -16,8 +20,8 @@
 #
 # Si algún archivo no es legible, probar con: sudo ./check_autocapture_triggers.sh
 #
-# Pega la salida completa de vuelta — sobre todo la sección de
-# evaluateTicker() — para cerrar la última pregunta abierta.
+# Pega la salida completa de vuelta — sobre todo la sección "Pregunta 1c"
+# — para cerrar la última verificación pendiente.
 
 set -u
 
@@ -46,6 +50,58 @@ print_function() {
     sed -n "${line},$((line + CONTEXT_LINES))p" "$file"
 }
 
+# Localiza la definición de $name (const/let/var/function/asignación),
+# extrae su cuerpo completo contando { } y [ ] hasta que cierran (con un
+# tope de seguridad por si el conteo se confunde con llaves dentro de un
+# string/regex), y comprueba si contiene alguna referencia a
+# navegador/DOM/canvas/chart/fetch interno. Solo vuelca el bloque entero
+# si encuentra algo — si no, solo confirma que está limpio.
+check_definition_for_browser_markers() {
+    local file="$1" name="$2" max_lines="${3:-1500}"
+    local line
+
+    if [[ ! -r "$file" ]]; then
+        echo "  (archivo no legible: $file — probar con sudo)"
+        return
+    fi
+
+    line=$(grep -n -m1 -E "(const|let|var)[[:space:]]+${name}\b|function[[:space:]]+${name}\b|\\b${name}[[:space:]]*=" "$file" 2>/dev/null \
+        | head -1 | cut -d: -f1)
+    if [[ -z "$line" ]]; then
+        echo "  (no encontrado: definición de $name)"
+        return
+    fi
+    echo "  ($name definido en línea $line de $file)"
+
+    local block
+    block=$(awk -v start="$line" -v maxlines="$max_lines" '
+        NR < start { next }
+        {
+            print
+            o = gsub(/[{\[]/, "&")
+            c = gsub(/[}\]]/, "&")
+            depth += o - c
+            if (NR > start && depth <= 0) { exit }
+            if (NR - start + 1 >= maxlines) {
+                print "... (corte de seguridad a " maxlines " líneas sin cerrar el balance de llaves/corchetes — revisar a mano si hace falta más)"
+                exit
+            }
+        }
+    ' "$file")
+
+    local hits
+    hits=$(printf '%s\n' "$block" | grep -n -E 'document\.|window\.|canvas|chart\.|getContext|fetch\(')
+
+    if [[ -z "$hits" ]]; then
+        echo "  -> limpio: sin document./window./canvas/chart./getContext/fetch( en el cuerpo de $name."
+    else
+        echo "  -> ENCONTRADO en $name (líneas relativas al bloque extraído):"
+        printf '%s\n' "$hits"
+        echo "  -> bloque completo de $name:"
+        printf '%s\n' "$block"
+    fi
+}
+
 echo "=== Archivos objetivo ==="
 for f in "$SCANNER_HTML" "$PROXY_PY"; do
     if [[ -r "$f" ]]; then
@@ -69,6 +125,17 @@ echo "    el cálculo del score pasa por aquí. Misma pregunta que antes:"
 echo "    ¿aritmética pura sobre los indicadores recibidos (replicable en"
 echo "    Python), o depende de algo que solo existe en el navegador? ---"
 print_function "$SCANNER_HTML" 'function[[:space:]]+evaluateTicker|evaluateTicker[[:space:]]*='
+
+echo
+echo "=== Pregunta 1c: grep dirigido en NYSE_STRATEGIES / CRYPTO_STRATEGIES / applyEventAdjustments / tickerHardNo ==="
+echo "--- Si ninguna de las cuatro contiene document./window./canvas/chart./"
+echo "    getContext/ o un fetch( interno, evaluateTicker() y todo lo que"
+echo "    llama es aritmética pura sobre datos — bloqueante cerrado del todo,"
+echo "    sin necesidad de Playwright. ---"
+for name in NYSE_STRATEGIES CRYPTO_STRATEGIES applyEventAdjustments tickerHardNo; do
+    echo "- $name:"
+    check_definition_for_browser_markers "$SCANNER_HTML" "$name"
+done
 
 echo
 echo "=== Pregunta 2a: runScan() completa (CERRADA — se deja por trazabilidad) ==="
