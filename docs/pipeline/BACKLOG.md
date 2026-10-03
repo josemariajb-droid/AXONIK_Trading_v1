@@ -135,14 +135,45 @@ Abreviatura usada: **DOC-IDEM** =
   `evaluate_ticker()` es ahora un `NotImplementedError` explícito.
   Depende también de la entrada 2 de este backlog (bind a `127.0.0.1`,
   patch listo, no aplicado).
-- **Para cerrarlo:** (1) portar `evaluate_ticker()` con los cuerpos
-  LITERALES de las cinco piezas (no un resumen en prosa — ya hubo un
-  error real por eso); (2) confirmar si "mismo grupo" en `AUTO_MULTI` es
-  de verdad `temporal_group` (lectura actual, no cita literal); (3)
-  aplicar el bind a `127.0.0.1`; (4) desplegar y verificar siguiendo el
-  protocolo del README (`--dry-run`, luego una corrida real con ZZTEST
-  fuera de la franja de los timers del evaluador) antes de habilitar el
-  timer.
+- **Decisión de arquitectura (04/10/2026):** no se porta `evaluate_ticker()`
+  dentro de `snapshot_autocapture.py`. Se expone `POST /api/evaluate-ticker`
+  nuevo en `market_data_proxy.py` — single source of truth server-side, en
+  vez de dos implementaciones (navegador y script Python) que puedan
+  divergir en silencio, como ya pasó con `signal_hash` y con
+  `risk_pct`/`risk_per_share`. El puerto de las 5 piezas a Python sigue
+  haciendo falta una vez (cambia el destino: el endpoint, no el script),
+  con los cuerpos LITERALES, no un resumen en prosa. Obligatorio antes de
+  dar el endpoint por bueno: comparar su resultado contra lo que calcula
+  hoy `evaluateTicker()` en el navegador, mismos tickers, mismo momento,
+  resultado idéntico — no se marca "verificado" sin esa comparación
+  explícita. El navegador no se toca en esta tarea — ver entrada 6.
+- **Para cerrarlo:** (1) portar las cinco piezas a `POST /api/evaluate-ticker`
+  en el proxy, con sus cuerpos literales; (2) verificación navegador-vs-
+  endpoint con datos reales; (3) confirmar si "mismo grupo" en
+  `AUTO_MULTI` es de verdad `temporal_group` (lectura actual, no cita
+  literal); (4) aplicar el bind a `127.0.0.1`; (5) desplegar y verificar
+  siguiendo el protocolo del README (`--dry-run`, luego una corrida real
+  con ZZTEST fuera de la franja de los timers del evaluador) antes de
+  habilitar el timer.
+
+### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
+
+- **Descripción:** al cerrar la entrada 5, `evaluateTicker()` +
+  `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`/`applyEventAdjustments`/
+  `tickerHardNo` pasan a vivir también (portadas) en
+  `POST /api/evaluate-ticker` dentro de `market_data_proxy.py`. El
+  navegador (`/opt/axonik/scanner/index.html`) sigue calculando con su
+  propia copia local — deliberadamente, no se toca en esa tarea. Mientras
+  existan dos copias, pueden divergir si alguien edita una sin la otra.
+- **Hallazgo original:** decisión de arquitectura del 04/10/2026 en la
+  entrada 5 de este backlog.
+- **Estado:** DEUDA ACEPTADA, no urgente — las dos copias parten del mismo
+  texto fuente recién verificado (entrada 5), así que el riesgo de
+  divergencia es bajo mientras no se edite ninguna de las dos.
+- **Para cerrarlo:** una vez que `POST /api/evaluate-ticker` lleve tiempo
+  estable en uso automático (criterio a definir — p.ej. unas semanas sin
+  incidencias), migrar `evaluateTicker()` del navegador a llamar a ese
+  mismo endpoint en vez de calcular localmente, y retirar la copia JS.
 
 ## Cerrados
 

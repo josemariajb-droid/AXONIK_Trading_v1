@@ -60,6 +60,49 @@ print_function() {
 # string/regex), y comprueba si contiene alguna referencia a
 # navegador/DOM/canvas/chart/fetch interno. Solo vuelca el bloque entero
 # si encuentra algo — si no, solo confirma que está limpio.
+# Extrae un bloque JS por balance de { } y [ ] (no por indentación —
+# JS no es significativo en eso). Con tope de seguridad si el conteo se
+# confunde con llaves dentro de un string/regex.
+extract_js_block() {
+    local file="$1" start_line="$2" max_lines="${3:-1500}"
+    awk -v start="$start_line" -v maxlines="$max_lines" '
+        NR < start { next }
+        {
+            print
+            o = gsub(/[{\[]/, "&")
+            c = gsub(/[}\]]/, "&")
+            depth += o - c
+            if (NR > start && depth <= 0) { exit }
+            if (NR - start + 1 >= maxlines) {
+                print "... (corte de seguridad a " maxlines " líneas sin cerrar el balance de llaves/corchetes — revisar a mano si hace falta más)"
+                exit
+            }
+        }
+    ' "$file"
+}
+
+# Localiza por nombre (const/let/var/function/asignación) y extrae con
+# extract_js_block. Siempre vuelca el bloque completo, sin condición.
+print_js_def() {
+    local file="$1" name="$2" max_lines="${3:-1500}"
+    local line
+    if [[ ! -r "$file" ]]; then
+        echo "  (archivo no legible: $file — probar con sudo)"
+        return
+    fi
+    line=$(grep -n -m1 -E "(const|let|var)[[:space:]]+${name}\b|function[[:space:]]+${name}\b|\\b${name}[[:space:]]*=" "$file" 2>/dev/null \
+        | head -1 | cut -d: -f1)
+    if [[ -z "$line" ]]; then
+        echo "  (no encontrado: definición de $name)"
+        return
+    fi
+    echo "  ($name definido en línea $line de $file)"
+    extract_js_block "$file" "$line" "$max_lines"
+}
+
+# Igual que print_js_def, pero solo vuelca el bloque si encuentra alguna
+# referencia a navegador/DOM/canvas/chart/fetch interno dentro — si está
+# limpio, solo lo confirma, sin volcar el texto (usado en la Pregunta 1c).
 check_definition_for_browser_markers() {
     local file="$1" name="$2" max_lines="${3:-1500}"
     local line
@@ -78,20 +121,7 @@ check_definition_for_browser_markers() {
     echo "  ($name definido en línea $line de $file)"
 
     local block
-    block=$(awk -v start="$line" -v maxlines="$max_lines" '
-        NR < start { next }
-        {
-            print
-            o = gsub(/[{\[]/, "&")
-            c = gsub(/[}\]]/, "&")
-            depth += o - c
-            if (NR > start && depth <= 0) { exit }
-            if (NR - start + 1 >= maxlines) {
-                print "... (corte de seguridad a " maxlines " líneas sin cerrar el balance de llaves/corchetes — revisar a mano si hace falta más)"
-                exit
-            }
-        }
-    ' "$file")
+    block=$(extract_js_block "$file" "$line" "$max_lines")
 
     local hits
     hits=$(printf '%s\n' "$block" | grep -n -E 'document\.|window\.|canvas|chart\.|getContext|fetch\(')
@@ -237,4 +267,17 @@ echo "    snapshot_autocapture.py. ---"
 print_python_def "$PROXY_PY" 'def[[:space:]]+scan_batch\b'
 
 echo
-echo "=== Fin. Con esto debería quedar confirmado lo que falta en construir_payload_snapshot()/fetch_scan_batch(). ==="
+echo "=== Pregunta 5: texto literal de las 5 piezas a portar a POST /api/evaluate-ticker ==="
+echo "--- Decisión 04/10/2026: no se duplican en snapshot_autocapture.py --"
+echo "    se portan UNA vez a un endpoint nuevo en market_data_proxy.py."
+echo "    Las Preguntas 1/1b ya volcaron detectAutoTrigger/evaluateTicker"
+echo "    enteras; la 1c solo volcaba las otras 4 si encontraba un problema"
+echo "    de navegador -- como salieron limpias, nunca se volcó su texto."
+echo "    Esta sección las vuelca siempre, sin condición. ---"
+for name in detectAutoTrigger evaluateTicker NYSE_STRATEGIES CRYPTO_STRATEGIES applyEventAdjustments tickerHardNo; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name"
+done
+
+echo
+echo "=== Fin. Pega la salida completa de la Pregunta 5 para portar las 5 piezas al endpoint nuevo. ==="
