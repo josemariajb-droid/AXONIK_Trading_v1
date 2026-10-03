@@ -428,29 +428,42 @@ Instrucciones exactas de dónde pegarlo en `market_data_proxy.py`
 servidor) en `services/snapshot-autocapture/README.md`, Paso 1b — esta
 sesión no tiene acceso al Hetzner para aplicarlo ella misma.
 
-**Verificación navegador-vs-endpoint: protocolo escrito, NO ejecutada.**
-`services/snapshot-autocapture/VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`
-describe paso a paso cómo congelar los datos de un ticker real, llamar
-al endpoint nuevo y a `evaluateTicker()` del navegador con esos mismos
-datos, y diferenciar campo a campo. **Obligatoria antes de dar esto por
-cerrado** (instrucción explícita del usuario) — esta sesión no tiene
-acceso SSH/HTTPS al Hetzner ni a un navegador contra el servidor real,
-así que no puede ejecutarla ella misma. Pendiente de que se ejecute y
-se comiten los resultados.
+**Verificación navegador-vs-endpoint: EJECUTADA, encontró un bug real
+— BLOQUEADA, no reintentar todavía.** Con el Paso 1b aplicado al
+servidor real y `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` ejecutada
+contra AAPL real: `KeyError: 'price'`. El `d = ind['1d']` que devuelve
+`/api/scan-batch` real solo tiene `candles` y `periods` — **no**
+`price`, ni ninguno de los campos derivados que los 10 `evalXX`
+esperan directamente en `d` (`ema20/50/200`, `rsi`, `macdHist`,
+`rvol`, `gapPct`, `adx`, `diPlus`/`diMinus`...). Esto confirma el gap
+que ya se señalaba más abajo (shape exacto de `ind`), pero más
+grave: no es que falte un campo aislado, es que `evaluateTicker()` no
+recibe el `"data"` crudo de `scan-batch` en absoluto.
 
-**Hasta aplicar el Paso 1b:** correr el script contra el proxy real
-sigue fallando con `404` en `evaluate_ticker()` — a propósito, no
-silenciado.
+**Sospecha, sin confirmar todavía:** en `runScan()` (ya extraída,
+Pregunta 2a), `evaluateTicker()` recibe `rEntry.ind` — no la respuesta
+cruda del batch — que viene de `fetchAllNyse()`/`fetchAllCrypto()`,
+**nunca extraídas ni leídas hasta ahora**. Es probable que esas
+funciones calculen `price` y el resto de indicadores derivados a
+partir de `candles`/`periods` antes de pasarle los datos a
+`evaluateTicker()`. Si se confirma, el endpoint nuevo (y
+`evaluate_ticker()` en `snapshot_autocapture.py`, que hoy reenvía el
+`"data"` crudo tal cual) tienen que replicar esa misma transformación.
+
+**Pregunta 7 añadida** a `check_autocapture_triggers.sh`: extrae
+`fetchAllNyse`/`fetchAllCrypto` completas (misma mecánica de balance de
+llaves que la Pregunta 5). **No se reintenta la verificación hasta
+tener esa salida y confirmar exactamente qué transformación falta** —
+instrucción explícita del usuario, mismo criterio que ya aplicó a
+`risk_pct`/`risk_per_share` y al shape de `scan-batch`: texto literal
+antes de tocar código, nunca una suposición más sobre otra suposición.
 
 **Dos gaps adicionales, ya señalados, sin cambios por este paso:**
 de dónde salen `entry_price`/`stop_price`/`risk_per_share` para
 `construir_payload_snapshot()` (no están en el shape de
-`evaluate_ticker_logic.evaluate_ticker()`); y el shape exacto de `ind`
-que produce `get_ticker_data()` dentro de `scan_batch()` (visto en 6b
-que `scan_batch()` lo llama, pero no extraído su cuerpo — si difiere de
-lo asumido en `evaluate_ticker_logic.py`, el síntoma esperado es "todo
-N/A" en los `evalXX`, no una excepción, a confirmar en la verificación
-navegador-vs-endpoint).
+`evaluate_ticker_logic.evaluate_ticker()`); y confirmar si la
+transformación de `fetchAllNyse`/`fetchAllCrypto` (una vez conocida)
+debe vivir en el endpoint nuevo o en `evaluate_ticker_logic.py` mismo.
 
 ---
 

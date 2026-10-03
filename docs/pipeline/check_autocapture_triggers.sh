@@ -391,5 +391,23 @@ grep -n -E "priceMin|atrMax|rvolMin" "$SCANNER_HTML" 2>/dev/null | grep -v -E "s
     || echo "(sin coincidencias fuera de los usos ya vistos -- puede que los valores por defecto vivan en 09_PARAMETROS/12_CONFIGURACION de Sheets, no en el HTML; revisar ahí si esto sale vacío)"
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d y 6 -- hasta"
-echo "    tener esto no se escribe el patch final de POST /api/evaluate-ticker. ==="
+echo "=== Pregunta 7: fetchAllNyse / fetchAllCrypto -- de dónde sale 'price' en ind['1d'] ==="
+echo "--- La verificación navegador-vs-endpoint con AAPL real dio KeyError:"
+echo "    'price'. d=ind['1d'] del /api/scan-batch real solo tiene 'candles' y"
+echo "    'periods' -- NO 'price'. evaluateTicker() recibe rEntry.ind desde"
+echo "    runScan() (ya extraída, Pregunta 2a), que viene de"
+echo "    fetchAllNyse()/fetchAllCrypto() -- nunca extraídas ni leídas. Sospecha:"
+echo "    esas funciones derivan 'price' (y quizá otros campos) ANTES de pasarle"
+echo "    los datos a evaluateTicker() -- si es así, el endpoint nuevo tiene que"
+echo "    replicar esa misma transformación, no reenviar el 'data' crudo de"
+echo "    scan-batch tal cual. No se reintenta la verificación hasta confirmar"
+echo "    esto con el texto literal, no una suposición más. ---"
+for name in fetchAllNyse fetchAllCrypto; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name"
+done
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6 y 7 -- hasta"
+echo "    confirmar qué transformación aplica fetchAllNyse/fetchAllCrypto antes de"
+echo "    evaluateTicker(), no se reintenta la verificación navegador-vs-endpoint. ==="

@@ -237,28 +237,46 @@ Abreviatura usada: **DOC-IDEM** =
   - Verificado con un smoke test con `requests.post` mockeado: el flujo
     completo (`evaluate_ticker()` → `detect_auto_trigger()` →
     `construir_payload_snapshot()`) encaja sin errores.
-  - **Verificación navegador-vs-endpoint con datos reales: protocolo
-    escrito en `services/snapshot-autocapture/VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`,
-    NO ejecutada todavía** — esta sesión no tiene acceso SSH/HTTPS al
-    Hetzner ni a un navegador contra el servidor real. Obligatoria antes
-    de marcar esto "verificado" (instrucción explícita del usuario) —
-    pendiente de que se ejecute y se comitan los resultados.
+  - **Verificación navegador-vs-endpoint con datos reales: EJECUTADA,
+    encontró un bug real — BLOQUEADA, no reintentar todavía.** Con
+    AAPL real: `KeyError: 'price'`. `d = ind['1d']` del `/api/scan-batch`
+    real solo tiene `candles` y `periods` — **no** `price`, ni el resto
+    de campos derivados (`ema20/50/200`, `rsi`, `macdHist`, `rvol`,
+    `gapPct`, `adx`...) que los 10 `evalXX` esperan directamente en `d`.
+    Sospecha, sin confirmar todavía: en `runScan()` (ya extraída,
+    Pregunta 2a), `evaluateTicker()` recibe `rEntry.ind` — no la
+    respuesta cruda del batch — que viene de
+    `fetchAllNyse()`/`fetchAllCrypto()`, **nunca extraídas ni leídas**.
+    Es probable que esas funciones calculen `price` y los demás
+    indicadores derivados a partir de `candles`/`periods` ANTES de
+    pasarle los datos a `evaluateTicker()`. Si se confirma, el endpoint
+    nuevo tiene que replicar esa misma transformación — no reenviar el
+    `"data"` crudo de `scan-batch` tal cual, que es lo que hace hoy
+    `evaluate_ticker()` en `snapshot_autocapture.py`.
+  - **Pregunta 7 añadida** a `check_autocapture_triggers.sh`: extrae
+    `fetchAllNyse`/`fetchAllCrypto` completas (misma mecánica de balance
+    de llaves que la Pregunta 5). **No se reintenta la verificación
+    navegador-vs-endpoint hasta tener esa salida y confirmar exactamente
+    qué transformación falta** — instrucción explícita del usuario,
+    para no repetir con "indicadores derivados" el mismo error que ya
+    pasó una vez asumiendo el shape de `scan-batch` sin leerlo.
 - **Sigue sin resolver, fuera del alcance de este paso:** de dónde salen
   `entry_price`/`stop_price`/`risk_per_share` (no están en el shape de
-  `evaluate_ticker_logic.evaluate_ticker()`); el shape exacto de `ind`
-  que produce `get_ticker_data()` dentro de `scan_batch()` (no
-  extraído — si difiere de lo asumido, el síntoma esperado es "todo
-  N/A", no una excepción, a confirmar en la verificación).
+  `evaluate_ticker_logic.evaluate_ticker()`).
 - **Para cerrarlo:** (1)-(2) hechos (hoja real + `cargar_universo_de_tickers()`);
-  (3) aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py`
-  real (Paso 1b del README — código y decorador ya confirmados, solo
-  falta pegarlo y reiniciar el servicio); (4) ejecutar
-  `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con datos reales y comitir el
-  resultado — obligatorio antes de cerrar esto; (5) resolver el origen
-  de `entry_price`/`stop_price`/`risk_per_share`; (6) aplicar el bind a
-  `127.0.0.1`; (7) desplegar y verificar siguiendo el protocolo del
-  README (`--dry-run`, luego una corrida real con ZZTEST fuera de la
-  franja de los timers del evaluador) antes de habilitar el timer.
+  (3) ~~aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py`
+  real~~ hecho, pero la verificación reveló que falta la transformación
+  de `fetchAllNyse`/`fetchAllCrypto` antes de poder confiar en el
+  resultado — ejecutar la Pregunta 7, confirmar la transformación
+  exacta, y replicarla en el endpoint (o en `evaluate_ticker_logic.py`,
+  según dónde viva realmente) antes de volver a intentar la
+  verificación; (4) repetir `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con
+  datos reales hasta que coincida, y comitir el resultado — obligatorio
+  antes de cerrar esto; (5) resolver el origen de `entry_price`/
+  `stop_price`/`risk_per_share`; (6) aplicar el bind a `127.0.0.1`;
+  (7) desplegar y verificar siguiendo el protocolo del README
+  (`--dry-run`, luego una corrida real con ZZTEST fuera de la franja de
+  los timers del evaluador) antes de habilitar el timer.
 
 ### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
 
