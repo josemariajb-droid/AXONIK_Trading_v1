@@ -425,6 +425,27 @@ for name in fetchNyseTicker fetchCryptoTicker fetchFundamentals fetchInsiders sl
 done
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7 y 8 -- hasta"
-echo "    confirmar qué transformación aplica fetchNyseTicker/fetchCryptoTicker antes de"
-echo "    evaluateTicker(), no se reintenta la verificación navegador-vs-endpoint. ==="
+echo "=== Pregunta 9: computeIndicators / fetchBinanceKlines -- HALLAZGO MAYOR ==="
+echo "--- Pregunta 8 reveló algo más grande que una capa más de orquestación:"
+echo "    fetchNyseTicker() NO llama a /api/scan-batch (el endpoint que usa"
+echo "    snapshot_autocapture.py) -- llama a GET /api/scan-data?ticker=...,"
+echo "    un endpoint distinto, por ticker individual. Trae 'candles' en"
+echo "    bruto y los pasa a computeIndicators(candles, tf), que es quien"
+echo "    produce price/ema20/50/200/rsi/macdHist/rvol/gapPct/adx/etc -- TODO"
+echo "    lo que los 10 evalXX esperan en 'ind[tf]'. computeIndicators() es"
+echo "    muy probablemente la pieza MÁS GRANDE de todo este diseño (cálculo"
+echo "    real de indicadores técnicos, no orquestación ni scoring) y nunca"
+echo "    se había identificado como dependencia hasta ahora. fetchCryptoTicker()"
+echo "    usa la misma función sobre velas de fetchBinanceKlines(). Puede"
+echo "    llamar a su vez a sub-funciones (cálculo de EMA/RSI/MACD/ADX por"
+echo "    separado) -- si print_js_def encuentra algo no trivial dentro, NO"
+echo "    asumir que es el fondo sin revisarlo. ---"
+for name in computeIndicators fetchBinanceKlines; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name" 3000
+done
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7, 8 y 9 -- hasta"
+echo "    tener el cuerpo literal de computeIndicators() (y confirmar si llama a algo"
+echo "    más sin confirmar) no se reintenta la verificación navegador-vs-endpoint. ==="

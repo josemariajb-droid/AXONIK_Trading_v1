@@ -266,26 +266,49 @@ Abreviatura usada: **DOC-IDEM** =
     `candles`/`periods`) probablemente vive dentro de
     `fetchNyseTicker()`/`fetchCryptoTicker()`, no en
     `fetchAllNyse`/`fetchAllCrypto`.
-  - **Pregunta 8 añadida** a `check_autocapture_triggers.sh`: extrae
-    `fetchNyseTicker`, `fetchCryptoTicker`, `fetchFundamentals`,
-    `fetchInsiders` y `sleep` (este último casi con certeza trivial,
-    pero volcado igual, no asumido de memoria). **Sigue sin
-    reintentarse la verificación** hasta tener esa salida y confirmar
-    la transformación exacta.
+  - **Pregunta 8 confirmada (04/10/2026, `docs/pipeline/pregunta8_salida.txt`,
+    commit `add701f`) — HALLAZGO MAYOR, cambia el diagnóstico del todo:**
+    `fetchNyseTicker()` **no llama a `/api/scan-batch`** (el endpoint
+    que usa `snapshot_autocapture.py`) — llama a
+    `GET /api/scan-data?ticker=...&timeframes=1d,1h,15m`, un endpoint
+    **distinto**, por ticker individual. Trae `candles` en bruto y los
+    pasa a **`computeIndicators(candles, tf)`**, que es quien produce
+    `price`/`ema20/50/200`/`rsi`/`macdHist`/`rvol`/`gapPct`/`adx`/etc. —
+    TODO lo que los 10 `evalXX` esperan en `ind[tf]`.
+    `fetchCryptoTicker()` usa la misma `computeIndicators()` sobre velas
+    de `fetchBinanceKlines()`. `fetchFundamentals`/`fetchInsiders`
+    tampoco usan los endpoints `*-batch` — llaman a
+    `GET /api/fundamentals?ticker=`/`GET /api/insiders?ticker=`
+    (singular). `sleep()` confirmado trivial, sin más llamadas — cerrado.
+    **`computeIndicators()` nunca se había identificado como
+    dependencia hasta ahora, y es casi con certeza la pieza más grande
+    de todo este diseño** (cálculo real de indicadores técnicos —
+    EMA/RSI/MACD/ADX/RVOL — no orquestación ni scoring). Esto significa
+    que el contrato de entrada de `POST /api/evaluate-ticker` (recibir
+    `ind` ya calculado) nunca tuvo una fuente server-side real: ni
+    `/api/scan-batch` ni nada en `snapshot_autocapture.py` calculan
+    estos campos — solo devuelven `candles`/`periods` en bruto.
+  - **Pregunta 9 añadida** a `check_autocapture_triggers.sh`: extrae
+    `computeIndicators`/`fetchBinanceKlines` completas. **Sigue sin
+    reintentarse la verificación** hasta tener el cuerpo literal y
+    confirmar si llama a su vez a sub-funciones de cálculo (EMA/RSI/
+    MACD/ADX por separado) no identificadas todavía.
 - **Sigue sin resolver, fuera del alcance de este paso:** de dónde salen
   `entry_price`/`stop_price`/`risk_per_share` (no están en el shape de
   `evaluate_ticker_logic.evaluate_ticker()`).
 - **Para cerrarlo:** (1)-(2) hechos (hoja real + `cargar_universo_de_tickers()`);
   (3) ~~aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py`
-  real~~ hecho, pero la verificación reveló que falta la transformación
-  de `fetchAllNyse`/`fetchAllCrypto` antes de poder confiar en el
-  resultado — ejecutar la Pregunta 7, confirmar la transformación
-  exacta, y replicarla en el endpoint (o en `evaluate_ticker_logic.py`,
-  según dónde viva realmente) antes de volver a intentar la
-  verificación; (4) repetir `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con
-  datos reales hasta que coincida, y comitir el resultado — obligatorio
-  antes de cerrar esto; (5) resolver el origen de `entry_price`/
-  `stop_price`/`risk_per_share`; (6) aplicar el bind a `127.0.0.1`;
+  real~~ hecho, pero la verificación reveló un gap de arquitectura, no
+  solo de datos: falta portar `computeIndicators()` (o cambiar el
+  contrato del endpoint para que reciba `candles` en bruto y calcule
+  los indicadores él mismo, server-side — a decidir una vez se vea su
+  cuerpo real) antes de poder confiar en el resultado; ejecutar la
+  Pregunta 9, confirmar el cálculo exacto, y portarlo antes de volver a
+  intentar la verificación; (4) repetir
+  `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con datos reales hasta que
+  coincida, y comitir el resultado — obligatorio antes de cerrar esto;
+  (5) resolver el origen de `entry_price`/`stop_price`/`risk_per_share`;
+  (6) aplicar el bind a `127.0.0.1`;
   (7) desplegar y verificar siguiendo el protocolo del README
   (`--dry-run`, luego una corrida real con ZZTEST fuera de la franja de
   los timers del evaluador) antes de habilitar el timer.

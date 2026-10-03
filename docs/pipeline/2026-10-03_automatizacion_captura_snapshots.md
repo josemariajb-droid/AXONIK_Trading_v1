@@ -482,12 +482,58 @@ indicadores a partir de `candles`/`periods`) casi con certeza vive
 dentro de `fetchNyseTicker()`/`fetchCryptoTicker()`, no en
 `fetchAllNyse`/`fetchAllCrypto`.
 
-**Pregunta 8 añadida** a `check_autocapture_triggers.sh`: extrae
-`fetchNyseTicker`, `fetchCryptoTicker`, `fetchFundamentals`,
-`fetchInsiders` y `sleep` (este último casi con toda seguridad un
-delay trivial de una línea, pero volcado igual — no asumido de
-memoria). **Sigue sin reintentarse la verificación navegador-vs-endpoint**
-hasta tener esa salida y confirmar la transformación exacta —
+**Pregunta 8 confirmada (04/10/2026, `docs/pipeline/pregunta8_salida.txt`,
+commit `add701f`) — HALLAZGO MAYOR.** Texto literal:
+
+```js
+async function fetchNyseTicker(ticker){
+  const res = await fetch(`/api/scan-data?ticker=${encodeURIComponent(ticker)}&timeframes=1d,1h,15m`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  const ind = {};
+  for (const tf of ['1d','1h','15m']){
+    const tfData = json.data && json.data[tf];
+    ind[tf] = (tfData && tfData.candles && !tfData.error) ? computeIndicators(tfData.candles, tf) : null;
+  }
+  return ind;
+}
+```
+
+Dos cosas cambian el diagnóstico de fondo:
+
+1. **`fetchNyseTicker()` no llama a `/api/scan-batch`** (el endpoint que
+   usa `snapshot_autocapture.py` y sobre el que se diseñó
+   `POST /api/evaluate-ticker`) — llama a
+   `GET /api/scan-data?ticker=...`, un endpoint **distinto**, por
+   ticker individual, que trae `candles` en bruto.
+2. Esos `candles` se pasan a **`computeIndicators(candles, tf)`**, que
+   es quien calcula `price`/`ema20/50/200`/`rsi`/`macdHist`/`rvol`/
+   `gapPct`/`adx`/etc. — todo lo que los 10 `evalXX` esperan
+   directamente en `ind[tf]`. `fetchCryptoTicker()` usa la misma
+   función sobre velas de `fetchBinanceKlines()`. `fetchFundamentals`/
+   `fetchInsiders` tampoco usan los endpoints `*-batch`: llaman a
+   `GET /api/fundamentals?ticker=`/`GET /api/insiders?ticker=`
+   (singular). `sleep()` confirmado trivial — cerrado, sin más llamadas.
+
+**`computeIndicators()` nunca se había identificado como dependencia
+hasta ahora, y es casi con certeza la pieza más grande de todo este
+diseño** — cálculo real de indicadores técnicos (EMA/RSI/MACD/ADX/
+RVOL...), no orquestación ni scoring como todo lo anterior. Esto
+significa que el contrato de entrada de `POST /api/evaluate-ticker`
+(recibir `ind` ya calculado) **nunca tuvo una fuente server-side real**:
+ni `/api/scan-batch` ni nada en `snapshot_autocapture.py` calculan
+estos campos hoy — solo devuelven `candles`/`periods` en bruto. No es
+un campo que falte, es una función entera que falta portar (o una
+decisión de que el endpoint reciba `candles` en bruto y calcule él
+mismo, server-side, para no duplicar ese cálculo en dos sitios — a
+decidir una vez se vea el cuerpo real).
+
+**Pregunta 9 añadida** a `check_autocapture_triggers.sh`: extrae
+`computeIndicators`/`fetchBinanceKlines` completas (ventana ampliada a
+3000 líneas, dado el tamaño esperado). **Sigue sin reintentarse la
+verificación navegador-vs-endpoint** hasta tener el cuerpo literal y
+confirmar si `computeIndicators()` llama a su vez a sub-funciones de
+cálculo (EMA/RSI/MACD/ADX por separado) no identificadas todavía —
 instrucción explícita del usuario, mismo criterio que ya aplicó a
 `risk_pct`/`risk_per_share` y al shape de `scan-batch`: texto literal
 antes de tocar código, nunca una suposición más sobre otra suposición.
