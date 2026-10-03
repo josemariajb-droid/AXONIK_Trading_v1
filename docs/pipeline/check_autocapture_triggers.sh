@@ -316,5 +316,12 @@ for name in mkResult mkNA; do
 done
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b y 5c -- hasta"
-echo "    tener las 21 piezas no se porta nada al endpoint nuevo. ==="
+echo "=== Pregunta 5d: MAX_RAW_SCORE -- mkResult normaliza score/MAX_RAW_SCORE[id]*100 ==="
+echo "--- Cuarta capa encontrada al revisar mkResult (Pregunta 5c). Sin esta"
+echo "    tabla no se sabe el denominador de normalización por estrategia --"
+echo "    tan necesaria como STRATEGY_META. ---"
+print_js_def "$SCANNER_HTML" "MAX_RAW_SCORE"
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c y 5d -- hasta"
+echo "    tener las 22 piezas no se porta nada al endpoint nuevo. ==="
