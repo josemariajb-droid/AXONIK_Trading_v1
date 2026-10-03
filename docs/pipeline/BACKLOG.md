@@ -172,17 +172,28 @@ Abreviatura usada: **DOC-IDEM** =
   hoja propia, no en `11_LISTAS`.
 - **Decisión del universo de tickers (04/10/2026):** hoja nueva
   `14_UNIVERSO_TICKERS` en el Decision Engine (no JSON estático, no
-  `localStorage`). Columnas: `TICKER`, `MERCADO` (`NYSE`/`CRYPTO`),
-  `ESTADO` (`ACTIVO`/`PAUSADO`, misma lógica de activación que
-  `02_SCANNERS.ESTADO`), `FECHA_ALTA`. Esquema documentado en el diseño
-  §1.9, **pendiente de revisión** — la hoja no se ha creado todavía en el
-  Excel real y no se puebla con ningún ticker hasta que el usuario lo
-  decida manualmente. Sustituye a `cargar_universo_de_scanners()`/
-  `02_SCANNERS.ESTADO` como fuente del universo para esta automatización
-  (`02_SCANNERS` sigue existiendo para lo demás).
-- **Para cerrarlo:** (1) revisar y aprobar el esquema de
-  `14_UNIVERSO_TICKERS` (§1.9) y crear la hoja (solo cabeceras) en el
-  Excel real; (2) actualizar `cargar_universo_de_tickers()` en
+  `localStorage`). Columnas, esquema **aprobado** 04/10/2026: `TICKER`,
+  `MERCADO` (`NYSE`/`CRYPTO`), `ESTADO` (`ACTIVO`/`PAUSADO`, misma lógica
+  de activación que `02_SCANNERS.ESTADO`), `FECHA_ALTA`, `NOTAS` (texto
+  libre, mismo patrón que `05_OPERACIONES.NOTAS`). Esquema final y fila
+  propuesta para `00_README` documentados en el diseño §1.9. Sustituye a
+  `cargar_universo_de_scanners()`/`02_SCANNERS.ESTADO` como fuente del
+  universo para esta automatización (`02_SCANNERS` sigue existiendo para
+  lo demás).
+- **BLOQUEADO (herramienta, no decisión) — crear la hoja real:** esta
+  sesión no tiene ninguna herramienta capaz de escribir en el Google
+  Sheet real (el `Google_Drive` MCP conectado aquí solo soporta
+  operaciones de archivo completo — crear archivo nuevo o cambiar
+  título/carpeta de uno existente, no añadir pestañas ni filas dentro de
+  un spreadsheet; las escrituras reales usan `gspread` con la service
+  account del Hetzner, sin acceso desde esta sesión). El contenido exacto
+  para pegar a mano (fila de `00_README` + cabecera de la pestaña nueva)
+  está listo en el diseño §1.9, a la espera de que el usuario lo aplique
+  él mismo.
+- **Para cerrarlo:** (1) aplicar a mano en el Excel real la fila de
+  `00_README` y la pestaña `14_UNIVERSO_TICKERS` (contenido listo en
+  diseño §1.9 — bloqueado para esta sesión por falta de herramienta, ver
+  arriba); (2) actualizar `cargar_universo_de_tickers()` en
   `snapshot_autocapture.py` para leer de ahí filtrando `ESTADO=ACTIVO`;
   (3) cablear `POST /api/evaluate-ticker` en el proxy con
   `evaluate_ticker_logic.py`; (4) verificación navegador-vs-endpoint con

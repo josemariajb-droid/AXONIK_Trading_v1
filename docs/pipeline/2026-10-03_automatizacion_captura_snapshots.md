@@ -267,8 +267,8 @@ con la lectura de `02_SCANNERS.ESTADO` para este propósito — `02_SCANNERS`
 sigue existiendo para lo que ya hacía (catálogo de scanners), simplemente
 deja de ser la fuente del universo de *tickers* de esta automatización.
 
-**Esquema propuesto (NO creado todavía — pendiente de tu revisión antes de
-tocar el Excel real):**
+**Esquema final, aprobado 04/10/2026 (NO creado todavía en el Excel real —
+ver bloqueante de herramienta más abajo):**
 
 | Columna | Tipo | Valores | Notas |
 |---|---|---|---|
@@ -276,6 +276,47 @@ tocar el Excel real):**
 | `MERCADO` | enum | `NYSE` \| `CRYPTO` | mismo valor que espera `evaluate_ticker_logic.evaluate_ticker(mode=...)` — decide qué array fijo de estrategias corre (`NYSE_STRATEGIES` o `CRYPTO_STRATEGIES`, §1.7) |
 | `ESTADO` | enum | `ACTIVO` \| `PAUSADO` | misma lógica de activación que ya usa `02_SCANNERS.ESTADO` (un valor "en marcha" filtra, el resto no) — enum reducido a dos valores porque aquí no hay un estado intermedio tipo `EN_PRUEBAS` |
 | `FECHA_ALTA` | fecha (ISO `AAAA-MM-DD`) | — | cuándo se añadió el ticker al universo; trazabilidad, no se usa para filtrar |
+| `NOTAS` | texto libre | — | añadido 04/10/2026, mismo patrón que `05_OPERACIONES.NOTAS`; para anotar por qué entró un ticker si hace falta auditarlo más adelante. No se usa para filtrar, solo lectura humana |
+
+**Entrada añadida a `00_README` (misma tabla que documenta las otras 13
+hojas — columnas reales `HOJA | DESCRIPCIÓN | FUNCIÓN | ESTADO`,
+confirmadas leyendo el `.xlsx` cacheado de la auditoría Fase 0A, snapshot
+21/09/2026):**
+
+| HOJA | DESCRIPCIÓN | FUNCIÓN | ESTADO |
+|---|---|---|---|
+| `14_UNIVERSO_TICKERS` | Universo de tickers evaluados por la captura automática de snapshots (`TICKER`, `MERCADO`, `ESTADO`, `FECHA_ALTA`, `NOTAS`) | Config operativa | ✅ |
+
+Nota sobre esa misma lectura del `.xlsx` cacheado: la tabla de `00_README`
+en el snapshot del 21/09/2026 documenta hasta `12_CONFIGURACION` — no tiene
+fila para `13_INSTRUCCIONES`, aunque esa pestaña ya existe en el libro.
+Puede que se haya corregido desde entonces (es una copia de hace 2
+semanas, no una lectura en vivo); lo señalo porque es exactamente el tipo
+de hueco que esta tarea de añadir la fila de `14_UNIVERSO_TICKERS` busca
+evitar — si sigue faltando, es una fila más a añadir, fuera del alcance de
+esta tarea salvo que quieras incluirla en la misma pasada.
+
+**Bloqueante real para ejecutar el paso 1 (crear la hoja): esta sesión no
+tiene ninguna herramienta capaz de escribir en el Google Sheet real.**
+El `Google_Drive` MCP conectado aquí solo expone operaciones de archivo
+completo (`create_file` para crear un archivo nuevo, `update_file`
+limitado a título/carpeta, `search_files`/`read_file_content` de solo
+lectura) — ninguna permite añadir una pestaña ni escribir filas dentro de
+un spreadsheet ya existente. Las escrituras reales de producción a este
+mismo Sheet las hace `gspread` con la service account de
+`/opt/axonik/scripts/credentials.json`, que vive solo en el Hetzner — esta
+sesión confirmó en la tarea anterior que no tiene acceso de red a ese
+servidor (ni SSH ni HTTPS). No hay ninguna combinación de mis herramientas
+actuales que pueda crear la pestaña ni la fila de `00_README` por mí
+mismo en el documento real.
+
+**Lo que sí puedo entregar: el contenido exacto, listo para copiar y
+pegar**, para que lo apliques tú en dos pasos de 1 minuto cada uno en el
+Decision Engine real:
+1. En `00_README`, añadir la fila de la tabla de arriba.
+2. Crear la pestaña `14_UNIVERSO_TICKERS` con cabecera
+   `TICKER | MERCADO | ESTADO | FECHA_ALTA | NOTAS` y 0 filas de datos —
+   la pueblas tú a mano con los tickers iniciales, como ya dijiste.
 
 **Nombre de la hoja:** `14_UNIVERSO_TICKERS`, siguiente número libre tras
 `13_INSTRUCCIONES` (00 a 13 ya existen), siguiendo la convención
