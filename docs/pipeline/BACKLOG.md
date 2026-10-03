@@ -207,44 +207,58 @@ Abreviatura usada: **DOC-IDEM** =
   `evaluate_ticker_logic.evaluate_ticker()`, confirmado leyendo su
   código). `evaluate_ticker()` sigue siendo `NotImplementedError`
   explícito, pendiente del paso (3).
-- **Paso 3 — cableado parcial (04/10/2026):** lado cliente hecho:
-  `evaluate_ticker()` en `snapshot_autocapture.py` ya hace el `POST
-  /api/evaluate-ticker` real (ya no `NotImplementedError`), con el shape
-  que espera `evaluate_ticker_logic.evaluate_ticker()`. Lado servidor:
-  el código del endpoint está escrito y listo en
-  `services/snapshot-autocapture/evaluate_ticker_endpoint.py`, pero
-  **NO aplicado a `market_data_proxy.py`** — esta sesión nunca ha visto
-  ese archivo completo (no está en git), así que no se inventa el
-  decorador/imports reales. Se añadió una **Pregunta 6** a
-  `check_autocapture_triggers.sh` (6a: imports+app de la cabecera; 6b:
-  decorador real de `create_snapshot`/`scan_batch`, nunca visto porque
-  `print_python_def` localiza por `def`, no por la línea del decorador
-  de encima; 6c: modelos Pydantic, repetida porque la salida original de
-  la Pregunta 4a se pegó en el chat y se perdió al resumir el contexto,
-  nunca se comitió a un archivo; 6d: valores reales de
-  `settings.priceMin/atrMax/rvolMin`, usados hoy como placeholder en
-  `SETTINGS` del script). Hasta tener esa salida, correr el script
-  contra el proxy real falla con 404 en `evaluate_ticker()` — a
-  propósito, no silenciado. Verificado con un smoke test con
-  `requests.post` mockeado: el flujo completo (`evaluate_ticker()` →
-  `detect_auto_trigger()` → `construir_payload_snapshot()`) encaja sin
-  errores.
-- **Para cerrarlo:** (1) ~~aplicar a mano la hoja y la fila de
-  `00_README`~~ hecho; (2) ~~actualizar `cargar_universo_de_tickers()`~~
-  hecho; (3) ejecutar la Pregunta 6 contra el servidor real y aplicar
-  `evaluate_ticker_endpoint.py` a `market_data_proxy.py` con el
-  decorador/imports confirmados, corrigiendo `SETTINGS` y el campo de
-  `fetch_scan_batch()` si hace falta; (4) resolver el origen de
-  `entry_price`/`stop_price`/`risk_per_share`; (5) verificación
-  navegador-vs-endpoint con datos reales, obligatoria antes de marcar
-  "verificado"; (6) confirmar si "mismo grupo" en `AUTO_MULTI` es de
-  verdad `temporal_group` (lectura actual del campo `group` de
-  `STRATEGY_META`, consistente con el texto literal de
-  `detectAutoTrigger`, pero sin una comparación navegador-vs-endpoint
-  todavía); (7) aplicar el bind a `127.0.0.1`; (8) desplegar y verificar
-  siguiendo el protocolo del README (`--dry-run`, luego una corrida real
-  con ZZTEST fuera de la franja de los timers del evaluador) antes de
-  habilitar el timer.
+- **Paso 3 — Pregunta 6 confirmada contra el código real (04/10/2026,
+  `docs/pipeline/pregunta6_salida.txt`, commit `2b300ac`):**
+  - **6a/6b:** `app` es el nombre real de la variable FastAPI; Pydantic
+    v2 (`BaseModel, Field`, sintaxis `tipo | None`); `HTTPException` ya
+    importado. Ningún endpoint de escritura usa `Depends` ni
+    `response_model` hoy — mismo estilo simple (`@app.post("/api/...")`
+    + `async def handler(req: Model):`) que `create_snapshot`/
+    `scan_batch`, confirmado literal.
+  - **6c:** `ScanBatchRequest.tickers` — confirma que `fetch_scan_batch()`
+    ya usaba el campo correcto. Ya no es una suposición.
+  - **6d:** `DEFAULT_SETTINGS` real:
+    `{capital:10000, riskPct:0.5, priceMin:8, atrMax:4, rvolMin:1}`.
+    **El placeholder de `SETTINGS` en `snapshot_autocapture.py` tenía
+    `atrMax=6` — era incorrecto, corregido a 4.** Nota aparte: son
+    defaults del navegador, editables en su UI y persistidos solo en su
+    `localStorage` — no hay una fuente server-side única si el usuario
+    los cambió a mano ahí.
+  - De paso, la Pregunta 6 también re-confirmó literal que `detectAutoTrigger`
+    agrupa por `s.group` (no un campo separado "temporal_group") — ya
+    coincidía con `evaluate_ticker_logic.detect_auto_trigger()`, ahora
+    sin la salvedad de "lectura, no cita literal".
+  - `evaluate_ticker_endpoint.py` actualizado con el código final
+    (ya no comentado) y `SETTINGS` corregido en `snapshot_autocapture.py`.
+    **Sigue NO aplicado a `market_data_proxy.py` real** — instrucciones
+    exactas de dónde pegarlo en `services/snapshot-autocapture/README.md`
+    (Paso 1b), pendientes de que alguien con acceso al Hetzner las
+    ejecute.
+  - Verificado con un smoke test con `requests.post` mockeado: el flujo
+    completo (`evaluate_ticker()` → `detect_auto_trigger()` →
+    `construir_payload_snapshot()`) encaja sin errores.
+  - **Verificación navegador-vs-endpoint con datos reales: protocolo
+    escrito en `services/snapshot-autocapture/VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`,
+    NO ejecutada todavía** — esta sesión no tiene acceso SSH/HTTPS al
+    Hetzner ni a un navegador contra el servidor real. Obligatoria antes
+    de marcar esto "verificado" (instrucción explícita del usuario) —
+    pendiente de que se ejecute y se comitan los resultados.
+- **Sigue sin resolver, fuera del alcance de este paso:** de dónde salen
+  `entry_price`/`stop_price`/`risk_per_share` (no están en el shape de
+  `evaluate_ticker_logic.evaluate_ticker()`); el shape exacto de `ind`
+  que produce `get_ticker_data()` dentro de `scan_batch()` (no
+  extraído — si difiere de lo asumido, el síntoma esperado es "todo
+  N/A", no una excepción, a confirmar en la verificación).
+- **Para cerrarlo:** (1)-(2) hechos (hoja real + `cargar_universo_de_tickers()`);
+  (3) aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py`
+  real (Paso 1b del README — código y decorador ya confirmados, solo
+  falta pegarlo y reiniciar el servicio); (4) ejecutar
+  `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con datos reales y comitir el
+  resultado — obligatorio antes de cerrar esto; (5) resolver el origen
+  de `entry_price`/`stop_price`/`risk_per_share`; (6) aplicar el bind a
+  `127.0.0.1`; (7) desplegar y verificar siguiendo el protocolo del
+  README (`--dry-run`, luego una corrida real con ZZTEST fuera de la
+  franja de los timers del evaluador) antes de habilitar el timer.
 
 ### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
 

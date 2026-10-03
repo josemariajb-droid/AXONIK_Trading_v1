@@ -152,13 +152,19 @@ OPERATING_WEEKDAYS = {0, 1, 2, 3, 4}  # datetime.weekday(): lunes=0 ... viernes=
 # ampliar, no asumida aquí.
 EXCLUDED_MARKETS = {"CRYPTO"}
 
-# NO CONFIRMADO (Pregunta 6d, pendiente) — placeholder, no los valores
-# reales de producción. Ajustables por entorno mientras se confirman.
-# tickerHardNo()/los evalXX dependen de estos tres directamente.
+# CONFIRMADO (Pregunta 6d, docs/pipeline/pregunta6_salida.txt línea 1026):
+# DEFAULT_SETTINGS real del navegador es {capital:10000, riskPct:0.5,
+# priceMin:8, atrMax:4, rvolMin:1} — el placeholder anterior tenía
+# atrMax=6, que era INCORRECTO (el real es 4), corregido aquí. Nota: son
+# los valores por defecto del navegador, editables en su UI
+# (settingMap en index.html línea 2480) y persistidos solo en el
+# localStorage de cada navegador — si el usuario los cambió a mano ahí,
+# esta automatización seguirá usando los defaults, no lo que vea en su
+# sesión. No hay una fuente server-side única de esto hoy.
 SETTINGS = {
     "priceMin": float(os.environ.get("AXONIK_SETTINGS_PRICE_MIN", 8)),
-    "atrMax": float(os.environ.get("AXONIK_SETTINGS_ATR_MAX", 6)),
-    "rvolMin": float(os.environ.get("AXONIK_SETTINGS_RVOL_MIN", 1.0)),
+    "atrMax": float(os.environ.get("AXONIK_SETTINGS_ATR_MAX", 4)),
+    "rvolMin": float(os.environ.get("AXONIK_SETTINGS_RVOL_MIN", 1)),
 }
 
 LOG_PATH = Path(os.environ.get("AXONIK_AUTOCAPTURE_LOG", "/var/log/axonik/snapshot_autocapture.log"))

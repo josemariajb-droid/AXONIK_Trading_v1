@@ -11,40 +11,26 @@ Bloqueante de "¿hace falta Playwright?" cerrado: `detectAutoTrigger()`,
 sobre datos, sin DOM ni dependencia de navegador (verificado con
 `docs/pipeline/check_autocapture_triggers.sh`).
 
-## Estado tras la Pregunta 4 — 3 corregidos, 1 gap real bloqueante
+## Estado (04/10/2026) — universo de tickers y endpoint cableados, falta aplicar+verificar en el servidor real
 
-Los tres puntos que eran estimación ya se confirmaron contra el código
-real y están corregidos en `snapshot_autocapture.py`:
+- Universo de tickers: `14_UNIVERSO_TICKERS` (hoja real, ya creada y
+  poblada con 17 tickers), ya no `02_SCANNERS`/`localStorage`.
+- `evaluate_ticker()` en `snapshot_autocapture.py`: ya hace el `POST
+  /api/evaluate-ticker` real (ya no `NotImplementedError`).
+- `detect_auto_trigger()`: se usa directamente
+  `evaluate_ticker_logic.detect_auto_trigger()` (prioridad estricta
+  `AUTO_MULTI`→`AUTO_HIGH` correcta, con pruebas).
+- `risk_pct` → `risk_per_share` (confirmado contra `SnapshotCreateRequest`
+  real).
+- **`POST /api/evaluate-ticker` en sí: código confirmado contra el real
+  (Pregunta 6, `docs/pipeline/pregunta6_salida.txt`), pero NO aplicado
+  todavía a `market_data_proxy.py`** — ver Paso 1b más abajo.
 
-1. Shape de `POST /api/scan-batch` — corregido: `{"results": [{"ticker",
-   "timestamp", "data", "error"?}]}`, con el `"error"` por-ticker manejado
-   como omisión, no como fallo del batch.
-2. `risk_pct` — **era incorrecto**, el campo real es `risk_per_share`.
-3. Umbral de `detectAutoTrigger()` — corregido a las dos ramas reales
-   (`AUTO_HIGH` score≥90 individual, `AUTO_MULTI` ≥2 estrategias del mismo
-   `temporal_group` con score≥80 cada una — "mismo grupo" es una lectura,
-   no una cita literal, confirmar si hace falta certeza total).
-
-**Gap real descubierto al corregir el punto 1, no uno de los tres
-originales: el cálculo del score (`evaluateTicker()` + `NYSE_STRATEGIES`/
-`CRYPTO_STRATEGIES` + `applyEventAdjustments` + `tickerHardNo`) nunca se
-portó a Python.** El shape real de `scan-batch` ("data" = indicadores en
-bruto) demuestra que la asunción anterior (un `"score"` ya calculado en la
-respuesta) era sencillamente incorrecta. `evaluate_ticker()` es ahora un
-`NotImplementedError` explícito — verificado que el script falla ruidoso
-en el primer ticker real en vez de fingir un resultado.
-
-**Por esto el protocolo de verificación contra el servidor real (paso 3
-más abajo) todavía no está escrito.** Ejecutarlo hoy fallaría de
-inmediato en `evaluate_ticker()`. Antes de eso hace falta portar esa
-función con los **cuerpos literales** de las cinco piezas — no otro
-resumen en prosa, por la misma razón que `risk_per_share` ya se perdió en
-una paráfrasis.
-
-La forma de cerrarlos es la misma que ya ha funcionado en todo este diseño:
-extender `docs/pipeline/check_autocapture_triggers.sh` (sección "Pregunta 4",
-pendiente de añadir) para extraer el modelo Pydantic real de `create_snapshot`
-y la firma de `scan_batch`, en vez de asumir los nombres de campo.
+**Para cerrar esto de verdad falta, en orden:** (1) aplicar el Paso 1b
+(pegar el endpoint); (2) ejecutar
+`VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` — **obligatorio antes de dar
+nada por cerrado**, instrucción explícita del usuario; (3) solo entonces
+el protocolo de `--dry-run` del Paso 3 más abajo deja de ser prematuro.
 
 ## Paso 1 — bind del proxy a 127.0.0.1 (BACKLOG entrada 2, ALTA)
 
@@ -102,7 +88,41 @@ Si todo lo anterior pasa, registrar el resultado como addendum en
 `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md`, igual que el
 Addendum 4 del otro documento.
 
-## Paso 2 — instalar el script y las units (bloqueado: falta portar `evaluate_ticker()`, ver arriba)
+## Paso 1b — aplicar `POST /api/evaluate-ticker` (confirmado contra el código real, Pregunta 6)
+
+Decorador/imports confirmados en
+`docs/pipeline/pregunta6_salida.txt` (6a/6b/6c/6d) — ya no es una
+suposición. Código completo, listo para pegar, en
+`evaluate_ticker_endpoint.py` de este directorio.
+
+```bash
+cp evaluate_ticker_logic.py /opt/axonik/scripts/evaluate_ticker_logic.py
+
+cp /opt/axonik/scripts/market_data_proxy.py /opt/axonik/scripts/market_data_proxy.py.bak.$(date +%Y%m%d_%H%M%S)
+sha256sum /opt/axonik/scripts/market_data_proxy.py  # anotar antes de tocar nada
+```
+
+Editar `/opt/axonik/scripts/market_data_proxy.py` a mano:
+1. Añadir `import evaluate_ticker_logic as etl` junto a los demás imports
+   de la cabecera (línea ~920, junto a `from pydantic import BaseModel, Field`).
+2. Pegar el contenido de `evaluate_ticker_endpoint.py` desde
+   `class EvaluateTickerRequest` hasta el final (sin la cabecera de
+   comentarios ni el `import` repetido) inmediatamente después de la
+   línea `return {"results": results}` que cierra `scan_batch()`.
+
+```bash
+python3 -m py_compile /opt/axonik/scripts/market_data_proxy.py
+systemctl restart axonik-market-proxy
+curl -s http://127.0.0.1:8002/api/health  # debe seguir respondiendo
+```
+
+**Antes de seguir al paso 2:** ejecutar
+`VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` de este directorio — obligatorio,
+instrucción explícita del usuario. Sin eso, el endpoint puede estar
+sintácticamente bien y devolver resultados igualmente incorrectos (mismo
+riesgo que ya se vio real una vez con `risk_pct`/`risk_per_share`).
+
+## Paso 2 — instalar el script y las units (bloqueado: falta aplicar+verificar el Paso 1b)
 
 ```bash
 cp snapshot_autocapture.py /opt/axonik/scripts/snapshot_autocapture.py
