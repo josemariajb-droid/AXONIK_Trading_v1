@@ -304,5 +304,17 @@ for name in evalST01 evalST05 evalST06 evalST09 evalST11 evalST15 evalST16 evalS
 done
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5 y 5b -- hasta tener"
-echo "    las 10-13 piezas de 5b no se porta nada al endpoint nuevo. ==="
+echo "=== Pregunta 5c: mkResult y mkNA -- las 10 evalXX terminan devolviendo una de las dos ==="
+echo "--- Cada evalXX acaba en mkResult(...) o mkNA(...). Ninguna de las dos"
+echo "    estaba en la lista de 5b. No son triviales: evaluateTicker() hace"
+echo "    Object.assign({}, r, STRATEGY_META[r.id]) sobre lo que devuelven,"
+echo "    así que r.score/r.factors/r.applicable/r.verdict salen de aquí --"
+echo "    probablemente mkResult llama a finalizeVerdict internamente. ---"
+for name in mkResult mkNA; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name"
+done
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b y 5c -- hasta"
+echo "    tener las 21 piezas no se porta nada al endpoint nuevo. ==="
