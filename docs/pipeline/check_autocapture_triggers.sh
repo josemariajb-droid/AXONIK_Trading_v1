@@ -83,18 +83,29 @@ extract_js_block() {
 
 # Localiza por nombre (const/let/var/function/asignación) y extrae con
 # extract_js_block. Siempre vuelca el bloque completo, sin condición.
+# Avisa si hay más de una coincidencia del patrón de localización --
+# relevante sobre todo para nombres cortos como "f", donde la primera
+# coincidencia podría no ser la definición real (p.ej. un parámetro o
+# una variable de bucle con el mismo nombre en otro sitio del archivo).
 print_js_def() {
     local file="$1" name="$2" max_lines="${3:-1500}"
-    local line
+    local pattern="(const|let|var)[[:space:]]+${name}\b|function[[:space:]]+${name}\b|\\b${name}[[:space:]]*="
+    local line count
     if [[ ! -r "$file" ]]; then
         echo "  (archivo no legible: $file — probar con sudo)"
         return
     fi
-    line=$(grep -n -m1 -E "(const|let|var)[[:space:]]+${name}\b|function[[:space:]]+${name}\b|\\b${name}[[:space:]]*=" "$file" 2>/dev/null \
-        | head -1 | cut -d: -f1)
+    count=$(grep -c -E "$pattern" "$file" 2>/dev/null)
+    line=$(grep -n -m1 -E "$pattern" "$file" 2>/dev/null | head -1 | cut -d: -f1)
     if [[ -z "$line" ]]; then
         echo "  (no encontrado: definición de $name)"
         return
+    fi
+    if [[ "${count:-0}" -gt 1 ]]; then
+        echo "  (AVISO: $count líneas coinciden con el patrón de '$name' — se usa la primera,"
+        echo "   línea $line. Con nombres cortos puede ser un parámetro o variable de bucle,"
+        echo "   no la definición real. Revisar el bloque volcado y, si no parece correcto,"
+        echo "   buscar '$name' a mano en el archivo.)"
     fi
     echo "  ($name definido en línea $line de $file)"
     extract_js_block "$file" "$line" "$max_lines"
@@ -280,4 +291,18 @@ for name in detectAutoTrigger evaluateTicker NYSE_STRATEGIES CRYPTO_STRATEGIES a
 done
 
 echo
-echo "=== Fin. Pega la salida completa de la Pregunta 5 para portar las 5 piezas al endpoint nuevo. ==="
+echo "=== Pregunta 5b: las piezas que de verdad calculan cada score ==="
+echo "--- NYSE_STRATEGIES/CRYPTO_STRATEGIES (Pregunta 5) son solo arrays de"
+echo "    referencias a estas 10 funciones evalXX -- sin ellas,"
+echo "    evaluateTicker() es un orquestador vacío. STRATEGY_META,"
+echo "    finalizeVerdict y f() las usan evaluateTicker()/"
+echo "    applyEventAdjustments() -- si tienen lógica no trivial, son"
+echo "    igual de necesarias para portar el cálculo real. ---"
+for name in evalST01 evalST05 evalST06 evalST09 evalST11 evalST15 evalST16 evalSC01 evalSC02 evalSCPB STRATEGY_META finalizeVerdict f; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name"
+done
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5 y 5b -- hasta tener"
+echo "    las 10-13 piezas de 5b no se porta nada al endpoint nuevo. ==="
