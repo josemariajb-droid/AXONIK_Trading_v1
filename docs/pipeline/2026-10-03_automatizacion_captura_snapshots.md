@@ -1,8 +1,10 @@
 # Automatización de la captura de snapshots (reemplazo de `autoCaptureSnapshots()`)
 
 **Fecha:** 03/10/2026
-**Estado: DISEÑO — no implementado.** Pendiente de tu revisión antes de escribir
-ningún código o tocar el servidor.
+**Estado: IMPLEMENTADO (código real) — NO DESPLEGADO.** Bloqueante de
+"¿hace falta Playwright?" cerrado del todo (§1.4). Implementación en
+`services/snapshot-autocapture/` — pendiente de tu revisión antes de tocar
+el servidor, igual que con el fix de idempotencia.
 **Relacionado:** `docs/pipeline/2026-09-22_fix_idempotencia_ingesta.md` (en
 adelante **DOC-IDEM**) — el Addendum 2 de ese documento es la fuente de la
 evidencia sobre `autoCaptureSnapshots()` usada aquí. `docs/pipeline/BACKLOG.md`
@@ -114,17 +116,50 @@ recibe. Pero `evaluateTicker()` llama a otras piezas
 `tickerHardNo`) que no se habían revisado todavía — confirmar que
 `evaluateTicker()` en sí es limpia no basta si delega en algo que no lo es.
 
-**Verificación dirigida, en curso (no función por función, un grep acotado
-a las cuatro piezas que faltan):** `docs/pipeline/check_autocapture_triggers.sh`
-ahora tiene una sección "Pregunta 1c" que localiza las definiciones de esas
-cuatro piezas (con balance de llaves/corchetes, no una ventana fija de
-líneas — las de estrategias pueden ser grandes) y busca dentro de cada una
-`document.`, `window.`, `canvas`, `chart.`, `getContext`, o un `fetch(`
-interno. Si las cuatro salen limpias, el bloqueante queda cerrado del todo:
-`evaluateTicker()` y todo lo que llama es aritmética pura sobre datos,
-portable a Python sin Playwright. Si alguna no sale limpia, el script
-vuelca esa función completa para revisarla específicamente. **Resultado de
-esta pasada: pendiente de ejecutar.**
+**Verificación dirigida (Pregunta 1c) — CERRADA: las cuatro piezas salen
+limpias.** `NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`
+y `tickerHardNo` no contienen `document.`, `window.`, `canvas`, `chart.`,
+`getContext` ni un `fetch(` interno. **Bloqueante de "¿hace falta
+Playwright?" cerrado del todo:** `evaluateTicker()` y todo lo que llama es
+aritmética/orquestación pura sobre datos — un script Python sin navegador
+es viable.
+
+### 1.5 Implementación real entregada
+
+`services/snapshot-autocapture/`: `snapshot_autocapture.py` (código real,
+no pseudocódigo — ver esqueleto de §2.5 más abajo, ya superado),
+`axonik-snapshot-autocapture.service`/`.timer`, y `README.md` con el
+despliegue paso a paso. **No desplegado** — pendiente de tu revisión.
+
+Tres puntos siguen siendo la mejor estimación a partir de la documentación
+existente, marcados explícitamente en el código (no inventados con falsa
+certeza):
+
+1. Shape exacto de `POST /api/scan-batch`.
+2. Nombres de campo `entry_price`/`stop_price`/`risk_pct` en el payload de
+   `POST /api/snapshots` — el resto de campos (`ticker`/`market`/
+   `strategies`/`data_ts`/`snapshot_ts`/`temporal_group`) sí están
+   confirmados contra DOC-IDEM (Addendum 3, patch literal, y Addendum 4,
+   payload de prueba real contra el proxy en producción).
+3. Umbral numérico real de `detectAutoTrigger()` (hoy `80.0`, estimado a
+   partir de los `SCORE_ENTRADA` observados en `05_OPERACIONES`).
+
+`docs/pipeline/check_autocapture_triggers.sh` tiene ahora una sección
+"Pregunta 4" (modelos Pydantic de `create_snapshot`/`scan_batch` en el
+proxy) para cerrar los puntos 1 y 2 con la misma disciplina que todo lo
+anterior — extracción literal, no inferencia. El punto 3 no necesita un
+grep nuevo: debería verse en la salida de la Pregunta 1 de una pasada ya
+ejecutada.
+
+### 1.6 Bind a 127.0.0.1 (hallazgo 2 del backlog) — patch listo, no aplicado
+
+Decisión tomada: bind en vez de token (BACKLOG entrada 2, diseño §3.4 de
+este documento). Línea actual confirmada en `market_data_proxy.py`
+(DOC-IDEM, Hallazgo 4): `uvicorn.run(app, host="0.0.0.0", port=8002)` →
+`host="127.0.0.1"`. Patch de una línea, pasos de despliegue y verificación
+completos en `services/snapshot-autocapture/README.md` (incluye el efecto
+colateral sobre el acceso manual a `/scanner` desde fuera del host, que
+queda como decisión aparte).
 
 ---
 
@@ -226,10 +261,12 @@ mecanismo de secretos que ya usáis para no meter credenciales en el propio
 script, coherente con cómo está tratado `credentials.json` en BACKLOG entrada
 3.)
 
-### 2.5 Script `snapshot_autocapture.py` — esqueleto, no implementación
+### 2.5 Script `snapshot_autocapture.py` — esqueleto original (superado)
 
-Pseudocódigo, para que la revisión se centre en el flujo y no en sintaxis
-Python que de todas formas no se despliega hoy:
+**Superado por la implementación real en
+`services/snapshot-autocapture/snapshot_autocapture.py` (§1.5).** Se deja
+este pseudocódigo original por trazabilidad de cómo evolucionó el diseño,
+no como referencia activa:
 
 ```python
 #!/usr/bin/env python3
@@ -360,23 +397,27 @@ decisión tuya, no como parte automática de este diseño.
 
 ---
 
-## 4. Dependencias y orden recomendado
+## 4. Dependencias y orden recomendado (actualizado tras §1.5-1.6)
 
-No construir el timer de la sección 2 antes de:
+El bloqueante de Playwright (antes punto 1 de esta lista) **está cerrado**.
+No instalar el timer (`services/snapshot-autocapture/axonik-snapshot-autocapture.timer`)
+antes de:
 
-1. **Confirmar las cuatro piezas de la Pregunta 1c (§1.4)**
-   (`NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`,
-   `tickerHardNo`) — único punto abierto que queda; define si el script
-   Python es viable tal cual o si hace falta Playwright. El universo de
-   tickers, `detectAutoTrigger` y `evaluateTicker` ya están cerrados.
-2. **Al menos el bind a 127.0.0.1 o el token de la sección 3** desplegado —
-   tu propia instrucción: no más automatización sobre un endpoint abierto.
+1. **Cerrar los 3 puntos de §1.5** (shape de `scan-batch`, nombres de
+   campo de `/api/snapshots`, umbral de `detectAutoTrigger`) con la
+   Pregunta 4 de `check_autocapture_triggers.sh`.
+2. **Aplicar el bind a 127.0.0.1 (§1.6)** — tu propia instrucción: no más
+   automatización sobre un endpoint abierto. Patch y verificación en
+   `services/snapshot-autocapture/README.md`.
+3. **El protocolo de verificación del README** (`--dry-run`, luego una
+   corrida real con `--force-window` fuera de la franja de los timers del
+   evaluador) — mismo estándar que el hallazgo 1 de DOC-IDEM.
 
-Ambos son pasos de otra sesión con acceso al Hetzner (no de implementación
-aquí) — este documento es la especificación que esa sesión debe seguir,
-igual que DOC-IDEM lo fue para el hallazgo 1.
+Los tres son pasos de otra sesión con acceso al Hetzner (no de esta) — el
+código y el README son la especificación que esa sesión debe seguir, igual
+que DOC-IDEM lo fue para el hallazgo 1.
 
-## 5. Qué NO toca este diseño
+## 5. Qué NO toca este diseño ni la implementación
 
 - `scripts/validation_engine/` y los Gates (Fase 0B) — sin relación.
 - Los hallazgos 1, 3 y 4 de BACKLOG (timers simultáneos, control de
@@ -384,4 +425,6 @@ igual que DOC-IDEM lo fue para el hallazgo 1.
   siguen abiertos, sin cambios aquí.
 - El botón manual "Seguir" — sigue siendo una acción humana deliberada, no
   se automatiza.
-- Nada en producción: este commit solo toca documentos de este repositorio.
+- Nada en producción: este repositorio solo contiene el código listo para
+  desplegar y el README con los pasos — nadie lo ha aplicado todavía en el
+  Hetzner.

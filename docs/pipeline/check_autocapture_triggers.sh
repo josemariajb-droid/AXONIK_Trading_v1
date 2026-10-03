@@ -4,15 +4,19 @@
 # abiertas en docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md
 # §1.2 antes de implementar el timer systemd de ese diseño.
 #
-# Estado tras la 2ª pasada: detectAutoTrigger() y evaluateTicker()
-# confirmados como orquestación/aritmética pura sobre datos; universo de
-# tickers confirmado desde localStorage (decisión de producto ya tomada:
-# usar EN_PRUEBAS/PRODUCCION de 02_SCANNERS en su lugar). Verificación
-# final pendiente: grep dirigido (Pregunta 1c) en las cuatro piezas que
-# evaluateTicker() llama (NYSE_STRATEGIES, CRYPTO_STRATEGIES,
-# applyEventAdjustments, tickerHardNo) buscando document./window./canvas/
-# chart./getContext/fetch( interno. Limpio en las cuatro = bloqueante
-# cerrado del todo, sin Playwright.
+# Estado tras la 3ª pasada: bloqueante de "¿hace falta Playwright?" CERRADO
+# (detectAutoTrigger, evaluateTicker, NYSE_STRATEGIES, CRYPTO_STRATEGIES,
+# applyEventAdjustments y tickerHardNo son aritmética/orquestación pura,
+# sin DOM). Universo de tickers cerrado como decisión de producto
+# (EN_PRUEBAS/PRODUCCION de 02_SCANNERS, no localStorage).
+#
+# Lo que queda (Pregunta 4, nueva): nombres de campo exactos del payload
+# de POST /api/snapshots y shape de POST /api/scan-batch, para que
+# services/snapshot-autocapture/snapshot_autocapture.py deje de tener
+# "PENDIENTE DE CONFIRMAR" en construir_payload_snapshot()/
+# fetch_scan_batch(). El umbral de detectAutoTrigger() no necesita un
+# grep nuevo — ya debería verse en la salida de la Pregunta 1 de una
+# pasada anterior.
 #
 # Uso:
 #   ./check_autocapture_triggers.sh
@@ -20,8 +24,8 @@
 #
 # Si algún archivo no es legible, probar con: sudo ./check_autocapture_triggers.sh
 #
-# Pega la salida completa de vuelta — sobre todo la sección "Pregunta 1c"
-# — para cerrar la última verificación pendiente.
+# Pega la salida completa de vuelta — sobre todo la sección "Pregunta 4"
+# — para terminar de confirmar services/snapshot-autocapture/snapshot_autocapture.py.
 
 set -u
 
@@ -102,6 +106,49 @@ check_definition_for_browser_markers() {
     fi
 }
 
+# Extrae un bloque Python por indentación (no llaves): desde $start_line
+# hasta la primera línea no vacía cuya indentación sea <= la de esa
+# línea. Sirve para funciones/clases completas sin cortar a mitad ni
+# arrastrar código no relacionado detrás.
+extract_python_block() {
+    local file="$1" start_line="$2" max_lines="${3:-300}"
+    if [[ ! -r "$file" ]]; then
+        echo "  (archivo no legible: $file — probar con sudo)"
+        return
+    fi
+    awk -v start="$start_line" -v maxlines="$max_lines" '
+        function indent_of(s) { match(s, /^[ \t]*/); return RLENGTH }
+        NR < start { next }
+        NR == start { base = indent_of($0); print; next }
+        {
+            if ($0 ~ /^[ \t]*$/) { print; next }
+            if (indent_of($0) <= base) { exit }
+            print
+            if (NR - start + 1 >= maxlines) {
+                print "... (corte de seguridad a " maxlines " líneas)"
+                exit
+            }
+        }
+    ' "$file"
+}
+
+# Localiza por nombre (función o clase) y extrae con extract_python_block.
+print_python_def() {
+    local file="$1" pattern="$2"
+    local line
+    if [[ ! -r "$file" ]]; then
+        echo "  (archivo no legible: $file — probar con sudo)"
+        return
+    fi
+    line=$(grep -n -m1 -E "$pattern" "$file" 2>/dev/null | head -1 | cut -d: -f1)
+    if [[ -z "$line" ]]; then
+        echo "  (no encontrado: patrón '$pattern' en $file)"
+        return
+    fi
+    echo "  (encontrado en línea $line de $file)"
+    extract_python_block "$file" "$line"
+}
+
 echo "=== Archivos objetivo ==="
 for f in "$SCANNER_HTML" "$PROXY_PY"; do
     if [[ -r "$f" ]]; then
@@ -159,10 +206,35 @@ grep -n -E "credentials:|document\.cookie|csrf|Authorization" "$SCANNER_HTML" 2>
     || echo "(sin coincidencias)"
 
 echo
-echo "=== Complemento: handler de /api/scan-batch en el proxy ==="
-echo "--- Si ya devuelve indicadores calculados (rsi, score, rvol...), refuerza"
-echo "    que detectAutoTrigger solo compara y no calcula nada él mismo. ---"
-print_function "$PROXY_PY" 'scan.batch|def[[:space:]]+scan_batch|async[[:space:]]+def[^(]*scan_batch'
+echo "=== Pregunta 4a: modelos Pydantic (class ...BaseModel) en el proxy ==="
+echo "--- Para confirmar los nombres de campo exactos del payload de"
+echo "    POST /api/snapshots (hoy entry_price/stop_price/risk_pct son una"
+echo "    estimación en services/snapshot-autocapture/snapshot_autocapture.py,"
+echo "    no una lectura literal). ---"
+if [[ -r "$PROXY_PY" ]]; then
+    mapfile -t model_lines < <(grep -n -E '^class[[:space:]]+[A-Za-z_]+\(.*BaseModel' "$PROXY_PY" 2>/dev/null)
+    if [[ ${#model_lines[@]} -eq 0 ]]; then
+        echo "  (no se encontró ninguna clase BaseModel en $PROXY_PY)"
+    else
+        for entry in "${model_lines[@]}"; do
+            ln="${entry%%:*}"
+            echo "- definida en línea $ln:"
+            extract_python_block "$PROXY_PY" "$ln" 60
+        done
+    fi
+else
+    echo "  (archivo no legible: $PROXY_PY — probar con sudo)"
+fi
 
 echo
-echo "=== Fin. Lo que falta cerrar: la sección 'evaluateTicker()' de arriba. ==="
+echo "=== Pregunta 4b: create_snapshot() completa (handler de POST /api/snapshots) ==="
+print_python_def "$PROXY_PY" 'def[[:space:]]+create_snapshot\b'
+
+echo
+echo "=== Pregunta 4c: scan_batch() completa (handler de POST /api/scan-batch) ==="
+echo "--- Shape exacto de petición/respuesta que asume fetch_scan_batch() en"
+echo "    snapshot_autocapture.py. ---"
+print_python_def "$PROXY_PY" 'def[[:space:]]+scan_batch\b'
+
+echo
+echo "=== Fin. Con esto debería quedar confirmado lo que falta en construir_payload_snapshot()/fetch_scan_batch(). ==="

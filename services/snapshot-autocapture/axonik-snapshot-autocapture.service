@@ -1,0 +1,11 @@
+[Unit]
+Description=AXONIK - captura automatica de snapshots (reemplaza autoCaptureSnapshots del navegador)
+After=network.target axonik-market-proxy.service
+Requires=axonik-market-proxy.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/axonik/scripts
+EnvironmentFile=/etc/axonik/autocapture.env
+ExecStart=/usr/bin/python3 /opt/axonik/scripts/snapshot_autocapture.py
+TimeoutStartSec=120

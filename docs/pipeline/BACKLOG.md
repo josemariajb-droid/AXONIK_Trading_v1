@@ -53,9 +53,11 @@ Abreviatura usada: **DOC-IDEM** =
 - **Hallazgo original:** DOC-IDEM, "Hallazgo 4 — `market_data_proxy`
   expuesto en `0.0.0.0:8002` sin autenticación", más la "Comprobación previa
   al despliegue" del Addendum 3.
-- **Estado:** DISEÑO (antes INFORME) — diseño de autenticación mínima en
-  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` §3, sin
-  desplegar.
+- **Estado:** DISEÑO (antes INFORME) — decisión tomada: bind a `127.0.0.1`
+  en vez de token (§3.4/§1.6 de
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md`). Patch de
+  una línea + pasos de despliegue en
+  `services/snapshot-autocapture/README.md`, sin aplicar todavía.
 - **Para cerrarlo:** añadir autenticación real en el servicio, no depender solo
   del firewall. Como mínimo, los endpoints de escritura deben exigir un token
   y el frontend `/scanner` debe enviarlo. Además, restringir el CORS al
@@ -113,24 +115,27 @@ Abreviatura usada: **DOC-IDEM** =
 ### 5. [MEDIA] Automatizar `autoCaptureSnapshots()` (reemplazar la dependencia del navegador)
 
 - **Descripción:** la captura de snapshots depende hoy de tener el scanner
-  HTML abierto con auto-refresh en el navegador. Diseño de automatización
-  headless (timer systemd, ventana 16:00-18:00 Madrid L-V) en
-  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md`. Bloqueado
-  por una pregunta sin confirmar: si `detectAutoTrigger()` y el universo de
-  tickers que evalúa `runScan()` dependen de algo calculado solo en el
-  navegador, haría falta Playwright en vez de un script Python simple — ver
-  §1.2 de ese documento.
+  HTML abierto con auto-refresh en el navegador. Diseño +
+  **implementación real** (sin Playwright, confirmado) en
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` y
+  `services/snapshot-autocapture/`.
 - **Hallazgo original:** este documento (03/10/2026), a partir de la
   investigación ya existente en DOC-IDEM Addendum 2 §1.2.
-- **Estado:** DISEÑO, no implementado. Depende también de que la entrada 2
-  de este backlog (autenticación del proxy) tenga al menos una mitigación
-  mínima antes de desplegarse — no construir más automatización sobre un
-  endpoint abierto.
-- **Para cerrarlo:** (1) extraer el código real de `autoCaptureSnapshots`/
-  `detectAutoTrigger`/`runScan` para confirmar que es replicable sin
-  navegador; (2) implementar `snapshot_autocapture.py` + unit systemd; (3)
-  desplegar y verificar que respeta la ventana operativa y que no captura
-  nada fuera de ella ni con un arranque manual del servicio.
+- **Estado:** IMPLEMENTADO (código real), NO DESPLEGADO. Bloqueante de
+  Playwright cerrado (`detectAutoTrigger`/`evaluateTicker`/
+  `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`/`applyEventAdjustments`/
+  `tickerHardNo`, todos confirmados como aritmética/orquestación pura sin
+  DOM). Depende de la entrada 2 de este backlog: se resuelve con bind a
+  `127.0.0.1` en vez de token, patch listo en
+  `services/snapshot-autocapture/README.md`, no aplicado.
+- **Para cerrarlo:** (1) confirmar con la Pregunta 4 de
+  `check_autocapture_triggers.sh` el shape de `scan-batch` y los nombres
+  de campo `entry_price`/`stop_price`/`risk_pct` de `/api/snapshots`
+  (hoy estimados, no leídos literalmente); (2) aplicar el bind a
+  `127.0.0.1`; (3) desplegar el script y las units siguiendo el
+  protocolo de verificación del README (`--dry-run`, luego una corrida
+  real fuera de la franja de los timers del evaluador) antes de habilitar
+  el timer.
 
 ## Cerrados
 
