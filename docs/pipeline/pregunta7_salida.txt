@@ -1,0 +1,1129 @@
+=== Archivos objetivo ===
+OK  /opt/axonik/scanner/index.html (3459 líneas)
+OK  /opt/axonik/scripts/market_data_proxy.py (1363 líneas)
+
+=== Pregunta 1: detectAutoTrigger() completa — CONFIRMADO: comparación pura ===
+--- Ya confirmado en una pasada anterior: solo compara scores, no los
+    calcula. Se deja aquí por trazabilidad, no bloquea nada. ---
+(encontrado en línea 2669 de /opt/axonik/scanner/index.html, mostrando hasta línea 2769)
+function detectAutoTrigger(r){
+  if (!r || r.error || r.hardNo) return null;
+  if (r.globalVerdict==='NO' || r.globalVerdict==='N/A') return null;
+  const applicable = r.strategies.filter(s=>s.applicable);
+
+  const byGroup = {};
+  for (const s of applicable){
+    if (s.score>=80) (byGroup[s.group] = byGroup[s.group]||[]).push(s);
+  }
+  for (const group in byGroup){
+    if (byGroup[group].length>=2) return {type:'AUTO_MULTI', strategies: byGroup[group]};
+  }
+
+  const highSingle = applicable.filter(s=>s.score>=90);
+  if (highSingle.length){
+    const top = highSingle.reduce((a,b)=> b.score>a.score ? b : a, highSingle[0]);
+    return {type:'AUTO_HIGH', strategies:[top]};
+  }
+  return null;
+}
+
+async function autoCaptureSnapshots(evaluated){
+  let captured = 0;
+  for (const r of evaluated){
+    if (r.error) continue;
+    const trigger = detectAutoTrigger(r);
+    if (!trigger) continue;
+    if (state.followedToday.has(r.ticker)) continue;
+    const payload = buildSnapshotPayload(r, trigger.type, trigger.strategies);
+    if (!payload) continue;
+    const result = await postSnapshot(payload);
+    if (result && result.created){
+      captured++;
+      state.followedToday.add(r.ticker);
+    }
+  }
+  return captured;
+}
+
+function renderCaptureNotice(captured){
+  const el = document.getElementById('captureNotice');
+  if (!captured){ el.innerHTML = ''; return; }
+  const label = `📋 ${captured} señal${captured>1?'es':''} capturada${captured>1?'s':''} — ver Cartera`;
+  el.innerHTML = `<span class="capture-notice">${label}</span>`;
+  el.querySelector('.capture-notice').addEventListener('click', ()=> setTab('cartera'));
+}
+
+/* ============ PANEL DE RIESGO (sidebar) ============ */
+
+async function fetchOpenPositions(){
+  try{
+    const res = await fetch('/api/snapshots?status=OPEN&limit=200');
+    const json = await res.json();
+    return Array.isArray(json) ? json : [];
+  }catch(e){ return []; }
+}
+
+function computeSectorExposure(positions){
+  const counts = {};
+  for (const p of positions){
+    const sector = (p.fundamentals && p.fundamentals.sector) ? p.fundamentals.sector
+      : (p.market==='crypto' ? 'Crypto' : 'Sin sector');
+    counts[sector] = (counts[sector]||0) + 1;
+  }
+  return counts;
+}
+
+// A2/A3/A5 — refresca el panel de riesgo de cartera en el sidebar. Usa
+// state.correlationMatrix del último scan como ajuste "best effort": si una
+// posición abierta no aparece ahí (ticker fuera del universo actual), se
+// suma sin ajuste de correlación en vez de bloquear el cálculo.
+async function refreshRiskPanel(){
+  const positions = await fetchOpenPositions();
+  state.openPositions = positions;
+
+  const riskPct = state.settings.riskPct;
+  const posForRisk = positions.map(p=>({ticker:p.ticker, riskPct}));
+  const committed = computeCombinedRiskPct(posForRisk, state.correlationMatrix);
+  state.portfolioRiskCommittedPct = committed;
+
+  const maxRisk = state.riskSettings.maxPortfolioRiskPct;
+  const maxPos = state.riskSettings.maxPositions;
+  const over = committed > maxRisk;
+
+  document.getElementById('riskCommittedPct').textContent = committed.toFixed(2)+'%';
+  document.getElementById('riskMaxPct').textContent = maxRisk.toFixed(2)+'%';
+  document.getElementById('riskCommittedPct').parentElement.classList.toggle('over', over);
+  const fillEl = document.getElementById('riskBarFill');
+  fillEl.style.width = Math.min(100, (committed/maxRisk)*100 || 0)+'%';
+  fillEl.classList.toggle('over', over);
+
+  document.getElementById('posCount').textContent = positions.length;
+  document.getElementById('posMax').textContent = maxPos;
+
+  const sectors = computeSectorExposure(positions);
+  const sectorEl = document.getElementById('sectorExposure');
+  const total = positions.length || 1;
+  const entries = Object.entries(sectors).sort((a,b)=>b[1]-a[1]);
+  sectorEl.innerHTML = entries.length
+    ? entries.map(([s,n])=> `<span class="${(n/total>0.6 && total>=2)?'sector-warn':''}">${s} ${n}</span>`).join(' · ')
+    : 'Sin posiciones abiertas';
+
+=== Pregunta 1b: evaluateTicker() completa — BLOQUEANTE REAL ===
+--- Es la función que calcula los scores que detectAutoTrigger compara.
+    /api/scan-batch devuelve indicadores en bruto, no scores, así que
+    el cálculo del score pasa por aquí. Misma pregunta que antes:
+    ¿aritmética pura sobre los indicadores recibidos (replicable en
+    Python), o depende de algo que solo existe en el navegador? ---
+(encontrado en línea 1114 de /opt/axonik/scanner/index.html, mostrando hasta línea 1214)
+function evaluateTicker(ticker, ind, funda, mode, settings, btcGateOn, insiderSummary){
+  const d = ind['1d'];
+  if (!d) return null;
+  const hardNo = tickerHardNo(mode, d.price, d, settings);
+  const ctx = {ind, funda, hardNo, settings, mode, ticker, btcGateOn};
+  const fns = mode==='NYSE' ? NYSE_STRATEGIES : CRYPTO_STRATEGIES;
+  let strategies = fns.map(fn=>{
+    const r = fn(ctx);
+    return Object.assign({}, r, STRATEGY_META[r.id]);
+  });
+  strategies = applyEventAdjustments(strategies, mode, funda, insiderSummary, hardNo, d.rvol, settings.rvolMin);
+
+  const applicableStrats = strategies.filter(s=>s.applicable);
+  let best = null;
+  if (applicableStrats.length) best = applicableStrats.reduce((a,b)=> b.score>a.score ? b : a);
+
+  let earningsDays = null;
+  if (mode==='NYSE' && funda && funda.next_earnings){
+    earningsDays = (new Date(funda.next_earnings+'T00:00:00Z') - Date.now()) / 86400000;
+  }
+
+  return {
+    ticker, price:d.price, ind, funda, strategies, best,
+    globalVerdict: best ? best.verdict : 'N/A',
+    globalScore: best ? best.score : 0,
+    hardNo,
+    insiderSummary: insiderSummary || null,
+    earningsDays: (earningsDays!=null && earningsDays>=0 && earningsDays<=35) ? Math.ceil(earningsDays) : null,
+  };
+}
+
+/* ============ PORTFOLIO RISK (Bloque A) ============ */
+
+function pctChangeSeries(candles, lookback){
+  lookback = lookback||60;
+  const closes = candles.map(c=>c.c).slice(-(lookback+1));
+  const out = [];
+  for (let i=1;i<closes.length;i++) out.push((closes[i]-closes[i-1])/closes[i-1]);
+  return out;
+}
+
+function pearsonCorrelation(a, b){
+  const n = Math.min(a.length, b.length);
+  if (n < 10) return NaN;
+  const av = a.slice(-n), bv = b.slice(-n);
+  const meanA = av.reduce((x,y)=>x+y,0)/n, meanB = bv.reduce((x,y)=>x+y,0)/n;
+  let num=0, denA=0, denB=0;
+  for (let i=0;i<n;i++){
+    const da = av[i]-meanA, db = bv[i]-meanB;
+    num += da*db; denA += da*da; denB += db*db;
+  }
+  const den = Math.sqrt(denA*denB);
+  return den>0 ? num/den : NaN;
+}
+
+// A1 — matriz de correlación entre señales activas (veredicto != NO/N-A) del scan actual.
+function computeCorrelationMatrix(results){
+  const active = results.filter(r=>!r.error && r.globalVerdict!=='NO' && r.globalVerdict!=='N/A'
+    && r.ind['1d'] && r.ind['1d'].candles && r.ind['1d'].candles.length>15);
+  const series = {};
+  for (const r of active) series[r.ticker] = pctChangeSeries(r.ind['1d'].candles, 60);
+  const tickers = Object.keys(series);
+  const matrix = {};
+  for (const t of tickers) matrix[t] = {};
+  for (let i=0;i<tickers.length;i++){
+    for (let j=i+1;j<tickers.length;j++){
+      const c = pearsonCorrelation(series[tickers[i]], series[tickers[j]]);
+      matrix[tickers[i]][tickers[j]] = c;
+      matrix[tickers[j]][tickers[i]] = c;
+    }
+  }
+  return matrix;
+}
+
+function getCorrelatedPeers(matrix, ticker, threshold){
+  threshold = threshold==null ? 0.75 : threshold;
+  const row = matrix[ticker];
+  if (!row) return [];
+  return Object.entries(row)
+    .filter(([t,c])=> c!=null && !isNaN(c) && Math.abs(c) > threshold)
+    .map(([t,c])=>({ticker:t, corr:c}))
+    .sort((a,b)=>Math.abs(b.corr)-Math.abs(a.corr));
+}
+
+// Marca el aviso SOLO en la señal de menor score del cluster (regla operativa:
+// toma solo la de mayor score, o divide el sizing entre las correlacionadas).
+function annotateCorrelationWarnings(results, matrix){
+  const scoreByTicker = {};
+  for (const r of results) if (!r.error) scoreByTicker[r.ticker] = r.globalScore;
+  for (const r of results){
+    if (r.error){ r.correlatedPeers = []; r.correlationWarning = null; continue; }
+    const peers = getCorrelatedPeers(matrix, r.ticker);
+    r.correlatedPeers = peers;
+    const higherPeer = peers.find(p => (scoreByTicker[p.ticker]||0) > r.globalScore);
+    r.correlationWarning = higherPeer ? {peerTicker: higherPeer.ticker, corr: higherPeer.corr} : null;
+  }
+}
+
+// Parte 3 — correlación de cada señal nueva contra CADA posición ya abierta
+// (no solo entre señales del scan actual). Usa fetchDailyCandlesForCorrelation
+// (definida en la sección CARTERA) para traer precios frescos de las
+
+=== Pregunta 1c: grep dirigido en NYSE_STRATEGIES / CRYPTO_STRATEGIES / applyEventAdjustments / tickerHardNo ===
+--- Si ninguna de las cuatro contiene document./window./canvas/chart./
+    getContext/ o un fetch( interno, evaluateTicker() y todo lo que
+    llama es aritmética pura sobre datos — bloqueante cerrado del todo,
+    sin necesidad de Playwright. ---
+- NYSE_STRATEGIES:
+  (NYSE_STRATEGIES definido en línea 1068 de /opt/axonik/scanner/index.html)
+  -> limpio: sin document./window./canvas/chart./getContext/fetch( en el cuerpo de NYSE_STRATEGIES.
+- CRYPTO_STRATEGIES:
+  (CRYPTO_STRATEGIES definido en línea 1069 de /opt/axonik/scanner/index.html)
+  -> limpio: sin document./window./canvas/chart./getContext/fetch( en el cuerpo de CRYPTO_STRATEGIES.
+- applyEventAdjustments:
+  (applyEventAdjustments definido en línea 1074 de /opt/axonik/scanner/index.html)
+  -> limpio: sin document./window./canvas/chart./getContext/fetch( en el cuerpo de applyEventAdjustments.
+- tickerHardNo:
+  (tickerHardNo definido en línea 893 de /opt/axonik/scanner/index.html)
+  -> limpio: sin document./window./canvas/chart./getContext/fetch( en el cuerpo de tickerHardNo.
+
+=== Pregunta 2a: runScan() completa (CERRADA — se deja por trazabilidad) ===
+--- Universo confirmado desde localStorage, no un endpoint. Decisión de
+    producto ya tomada: el proceso automático usa los scanners
+    EN_PRUEBAS/PRODUCCION de 02_SCANNERS en su lugar, no localStorage. ---
+(encontrado en línea 2536 de /opt/axonik/scanner/index.html, mostrando hasta línea 2636)
+async function runScan(){
+  if (state.scanning) return;
+  state.scanning = true;
+  const btn = document.getElementById('scanBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ ESCANEANDO...';
+  clearResults();
+  try{
+    const mode = state.mode;
+    const tickers = state.universe[mode].slice();
+    updateProgress('Cargando contexto de mercado...');
+    state.marketContext = await computeMarketContext(mode);
+    renderMarketContext();
+    const btcGateOn = mode==='CRYPTO' ? (state.marketContext ? state.marketContext.gateOn : false) : null;
+
+    const raw = mode==='NYSE'
+      ? await fetchAllNyse(tickers, updateProgress)
+      : await fetchAllCrypto(tickers, updateProgress);
+
+    const evaluated = [];
+    for (const t of tickers){
+      const rEntry = raw[t];
+      if (!rEntry || !rEntry.ind || !rEntry.ind['1d']){
+        evaluated.push({ticker:t, error: (rEntry && rEntry.error) || 'sin datos'});
+        continue;
+      }
+      const insiderSummary = rEntry.insiders ? rEntry.insiders.summary : null;
+      const result = evaluateTicker(t, rEntry.ind, rEntry.funda, mode, state.settings, btcGateOn, insiderSummary);
+      if (result) result.insiders = rEntry.insiders;
+      evaluated.push(result || {ticker:t, error:'evaluación fallida'});
+    }
+
+    // A1 — correlación entre señales activas del scan actual.
+    state.correlationMatrix = computeCorrelationMatrix(evaluated);
+    annotateCorrelationWarnings(evaluated, state.correlationMatrix);
+
+    // Parte 3 — correlación contra posiciones YA abiertas. Más importante
+    // que la intra-scan: ese riesgo ya está materializado en la cartera.
+    updateProgress('Comprobando correlación con posiciones abiertas...');
+    const openPositionsForCorr = await fetchOpenPositions();
+    await annotateOpenPositionCorrelationWarnings(evaluated, openPositionsForCorr);
+
+    state.results = evaluated;
+    await loadFollowedToday();
+    const captured = await autoCaptureSnapshots(evaluated);
+    await refreshRiskPanel();
+    renderResults();
+    document.getElementById('lastUpdate').textContent = 'Datos: '+new Date().toLocaleTimeString();
+    updateProgress(`Completado — ${tickers.length} tickers`);
+    renderCaptureNotice(captured);
+  } catch(e){
+    const isNetworkError = e instanceof TypeError || /failed to fetch|networkerror/i.test(e.message||'');
+    updateProgress(isNetworkError
+      ? 'Sin conexión con el servidor de datos. Verifica que el servicio esté activo en el puerto 8002.'
+      : 'Error durante el escaneo: '+(e.message||e));
+  } finally {
+    state.scanning = false;
+    btn.disabled = false;
+    btn.textContent = '▶ ESCANEAR';
+  }
+}
+
+/* ============ LEARNING ENGINE: captura de señales ============ */
+
+function stripCandles(indByTf){
+  const out = {};
+  for (const tf of ['1d','1h','15m']){
+    const d = indByTf[tf];
+    if (!d){ out[tf] = null; continue; }
+    const {candles, ...rest} = d;
+    out[tf] = rest;
+  }
+  return out;
+}
+
+function buildSnapshotPayload(r, triggerType, strategies){
+  if (!strategies || !strategies.length) return null;
+  const bestOfSet = strategies.reduce((a,b)=> b.score>a.score ? b : a, strategies[0]);
+  const nums = computeTradePlanNumbers(r, bestOfSet);
+  if (!nums) return null;
+  const d = r.ind['1d'];
+  const now = new Date();
+  const dataTs = (d.candles && d.candles.length)
+    ? new Date(d.candles[d.candles.length-1].t*1000)
+    : now;
+  return {
+    ticker: r.ticker,
+    market: state.mode.toLowerCase(),
+    trigger_type: triggerType,
+    snapshot_ts: now.toISOString(),
+    data_ts: dataTs.toISOString(),
+    strategies: strategies.map(s=>({id:s.id, name:s.name, score:s.score, group:s.group})),
+    temporal_group: bestOfSet.group,
+    best_score: bestOfSet.score,
+    strategy_version: STRATEGY_VERSION,
+    params_snapshot: {
+      priceMin: state.settings.priceMin, atrMax: state.settings.atrMax, rvolMin: state.settings.rvolMin,
+    },
+    entry_price: nums.entrada,
+    stop_price: nums.stop,
+    ema20_daily: nums.ema20,
+
+=== Pregunta 2b: rastro de localStorage/watchlist/checkboxes de ticker ===
+--- Si aparece algo aquí, el universo puede depender de estado de UI
+    del navegador en vez de un endpoint consultable. ---
+656:  try{ const v = localStorage.getItem('axonik_universe_'+mode); return v?JSON.parse(v):null; }catch(e){ return null; }
+659:  try{ localStorage.setItem('axonik_universe_'+state.mode, JSON.stringify(state.universe[state.mode])); }catch(e){}
+663:// desde el servidor (no un artefacto de Claude): localStorage persiste entre sesiones.
+665:  try{ const v = localStorage.getItem(key); return v!=null ? JSON.parse(v) : fallback; }catch(e){ return fallback; }
+668:  try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){}
+
+=== Pregunta 3: rastro de sesión/autenticación en el cliente ===
+--- Sin coincidencias es lo esperado, coherente con que el proxy no
+    exige autenticación en ningún endpoint hoy (BACKLOG entrada 2). ---
+(sin coincidencias)
+
+=== Pregunta 4a: modelos Pydantic (class ...BaseModel) en el proxy ===
+--- Para confirmar los nombres de campo exactos del payload de
+    POST /api/snapshots (hoy entry_price/stop_price/risk_pct son una
+    estimación en services/snapshot-autocapture/snapshot_autocapture.py,
+    no una lectura literal). ---
+- definida en línea 687:
+class CircuitBreakerBreach(BaseModel):
+    drawdown_pct: float
+
+
+- definida en línea 869:
+class FundamentalsBatchRequest(BaseModel):
+    tickers: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_TICKERS)
+
+
+- definida en línea 938:
+class ScanBatchRequest(BaseModel):
+    tickers: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_TICKERS)
+    timeframes: list[str] = Field(default_factory=lambda: ["1d", "1h", "15m"])
+
+
+- definida en línea 974:
+class EvaluateTickerRequest(BaseModel):
+    ticker: str
+    mode: str  # "NYSE" | "CRYPTO"
+    # Shape consumido por evaluate_ticker_logic: {"1d": {...}, "1h": {...},
+    # "15m": {...}}. Deliberadamente `dict` sin sub-modelo tipado campo a
+    # campo: evaluate_ticker_logic ya hace .get() con fallback a NaN sobre
+    # estas claves (mismo diseño que el JS original), y el shape real de
+    # get_ticker_data() sigue sin confirmar (ver docstring de arriba) —
+    # un esquema Pydantic estricto aquí solo añadiría una SEGUNDA
+    # definición de la forma de "ind" que podría divergir de la real.
+    ind: dict
+    funda: Optional[dict] = None
+    settings: dict  # CONFIRMADO (Pregunta 6d): DEFAULT_SETTINGS real, ver docstring arriba.
+    btc_gate_on: bool = False
+    insider_summary: Optional[dict] = None
+
+
+
+- definida en línea 1018:
+class SnapshotCreateRequest(BaseModel):
+    ticker: str
+    market: str
+    trigger_type: str
+    snapshot_ts: str
+    data_ts: str
+    strategies: list[dict] = Field(..., min_length=1)
+    temporal_group: str
+    best_score: int
+    strategy_version: str = STRATEGY_VERSION
+    params_snapshot: dict
+    entry_price: float
+    stop_price: float
+    ema20_daily: float | None = None
+    atr_daily: float | None = None
+    risk_per_share: float
+    indicators: dict | None = None
+    fundamentals: dict | None = None
+    market_regime: str | None = None
+    regime_ref_price: float | None = None
+    universe_size: int | None = None
+
+
+- definida en línea 1284:
+class CloseSnapshotRequest(BaseModel):
+    exit_price: float
+    exit_reason: str = "MANUAL"
+    notes: str | None = None
+
+
+
+=== Pregunta 4b: create_snapshot() completa (handler de POST /api/snapshots) ===
+  (encontrado en línea 1049 de /opt/axonik/scripts/market_data_proxy.py)
+async def create_snapshot(req: SnapshotCreateRequest):
+    if req.entry_price <= 0:
+        raise HTTPException(status_code=400, detail="entry_price debe ser > 0")
+    if req.risk_per_share <= 0:
+        raise HTTPException(status_code=400, detail="risk_per_share debe ser > 0")
+    if req.stop_price >= req.entry_price:
+        raise HTTPException(status_code=400, detail="stop_price debe ser < entry_price")
+
+    snapshot_dt = _parse_iso(req.snapshot_ts, "snapshot_ts")
+    data_dt = _parse_iso(req.data_ts, "data_ts")
+
+    strategy_ids = [s.get("id") for s in req.strategies if s.get("id")]
+    if not strategy_ids:
+        raise HTTPException(status_code=400, detail="strategies debe incluir al menos un id")
+
+    signal_hash = compute_signal_hash(req.ticker, req.market, data_dt, strategy_ids)
+    data_lag_hours = round((snapshot_dt - data_dt).total_seconds() / 3600, 2)
+    notes = None
+    if data_lag_hours > 24:
+        notes = f"data_lag_hours={data_lag_hours}h (>24h) — excluido de métricas agregadas por defecto (R4)"
+
+    insert_params = (
+        signal_hash, req.ticker.upper(), req.market.lower(), req.trigger_type,
+        snapshot_dt, data_dt, data_lag_hours,
+        Json(req.strategies), req.temporal_group, req.best_score, req.strategy_version,
+        Json(req.params_snapshot),
+        req.entry_price, req.stop_price, req.ema20_daily, req.atr_daily, req.risk_per_share,
+        Json(req.indicators) if req.indicators is not None else None,
+        Json(req.fundamentals) if req.fundamentals is not None else None,
+        req.market_regime, req.regime_ref_price, req.universe_size, notes,
+    )
+
+    def _try_insert():
+        with db_cursor(commit=True) as cur:
+            cur.execute("SELECT id FROM signal_snapshots WHERE signal_hash=%s", (signal_hash,))
+            existing = cur.fetchone()
+            if existing:
+                return {"created": False, "existing_id": existing["id"]}
+            cur.execute(
+                """
+                INSERT INTO signal_snapshots (
+                  signal_hash, ticker, market, trigger_type, snapshot_ts, data_ts, data_lag_hours,
+                  strategies, temporal_group, best_score, strategy_version, params_snapshot,
+                  entry_price, stop_price, ema20_daily, atr_daily, risk_per_share,
+                  indicators, fundamentals, market_regime, regime_ref_price, universe_size, notes
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s, %s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                insert_params,
+            )
+            new_id = cur.fetchone()["id"]
+            return {"created": True, "id": new_id, "signal_hash": signal_hash}
+
+    try:
+        result = await run_db(_try_insert)
+    except psycopg2.errors.UniqueViolation:
+        def _lookup():
+            with db_cursor() as cur:
+                cur.execute("SELECT id FROM signal_snapshots WHERE signal_hash=%s", (signal_hash,))
+                row = cur.fetchone()
+                return {"created": False, "existing_id": row["id"] if row else None}
+        result = await run_db(_lookup)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"error creando snapshot {req.ticker}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not result.get("created"):
+        logger.info(
+            f"snapshot duplicado suprimido: {req.ticker.upper()} market={req.market.lower()} "
+            f"data_ts={data_dt.isoformat()} strategies={sorted(strategy_ids)} "
+            f"existing_id={result.get('existing_id')}"
+        )
+    return result
+
+
+
+=== Pregunta 4c: scan_batch() completa (handler de POST /api/scan-batch) ===
+--- Shape exacto de petición/respuesta que asume fetch_scan_batch() en
+    snapshot_autocapture.py. ---
+  (encontrado en línea 944 de /opt/axonik/scripts/market_data_proxy.py)
+async def scan_batch(req: ScanBatchRequest):
+    if len(req.tickers) > MAX_BATCH_TICKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"máximo {MAX_BATCH_TICKERS} tickers por batch",
+        )
+    tfs = _validate_timeframes(req.timeframes)
+
+    semaphore = asyncio.Semaphore(BATCH_WORKERS)
+
+    async def _process(raw_ticker: str) -> dict:
+        async with semaphore:
+            try:
+                ticker = _validate_ticker(raw_ticker)
+                data = await get_ticker_data(ticker, tfs)
+                return {
+                    "ticker": ticker,
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "data": data,
+                }
+            except HTTPException as e:
+                return {"ticker": raw_ticker.upper(), "error": e.detail}
+            except Exception as e:
+                logger.warning(f"batch error for {raw_ticker}: {e}")
+                return {"ticker": raw_ticker.upper(), "error": str(e)}
+
+    results = await asyncio.gather(*(_process(t) for t in req.tickers))
+    return {"results": results}
+
+
+
+=== Pregunta 5: texto literal de las 5 piezas a portar a POST /api/evaluate-ticker ===
+--- Decisión 04/10/2026: no se duplican en snapshot_autocapture.py --
+    se portan UNA vez a un endpoint nuevo en market_data_proxy.py.
+    Las Preguntas 1/1b ya volcaron detectAutoTrigger/evaluateTicker
+    enteras; la 1c solo volcaba las otras 4 si encontraba un problema
+    de navegador -- como salieron limpias, nunca se volcó su texto.
+    Esta sección las vuelca siempre, sin condición. ---
+- detectAutoTrigger:
+  (detectAutoTrigger definido en línea 2669 de /opt/axonik/scanner/index.html)
+function detectAutoTrigger(r){
+  if (!r || r.error || r.hardNo) return null;
+  if (r.globalVerdict==='NO' || r.globalVerdict==='N/A') return null;
+  const applicable = r.strategies.filter(s=>s.applicable);
+
+  const byGroup = {};
+  for (const s of applicable){
+    if (s.score>=80) (byGroup[s.group] = byGroup[s.group]||[]).push(s);
+  }
+  for (const group in byGroup){
+    if (byGroup[group].length>=2) return {type:'AUTO_MULTI', strategies: byGroup[group]};
+  }
+
+  const highSingle = applicable.filter(s=>s.score>=90);
+  if (highSingle.length){
+    const top = highSingle.reduce((a,b)=> b.score>a.score ? b : a, highSingle[0]);
+    return {type:'AUTO_HIGH', strategies:[top]};
+  }
+  return null;
+}
+- evaluateTicker:
+  (evaluateTicker definido en línea 1114 de /opt/axonik/scanner/index.html)
+function evaluateTicker(ticker, ind, funda, mode, settings, btcGateOn, insiderSummary){
+  const d = ind['1d'];
+  if (!d) return null;
+  const hardNo = tickerHardNo(mode, d.price, d, settings);
+  const ctx = {ind, funda, hardNo, settings, mode, ticker, btcGateOn};
+  const fns = mode==='NYSE' ? NYSE_STRATEGIES : CRYPTO_STRATEGIES;
+  let strategies = fns.map(fn=>{
+    const r = fn(ctx);
+    return Object.assign({}, r, STRATEGY_META[r.id]);
+  });
+  strategies = applyEventAdjustments(strategies, mode, funda, insiderSummary, hardNo, d.rvol, settings.rvolMin);
+
+  const applicableStrats = strategies.filter(s=>s.applicable);
+  let best = null;
+  if (applicableStrats.length) best = applicableStrats.reduce((a,b)=> b.score>a.score ? b : a);
+
+  let earningsDays = null;
+  if (mode==='NYSE' && funda && funda.next_earnings){
+    earningsDays = (new Date(funda.next_earnings+'T00:00:00Z') - Date.now()) / 86400000;
+  }
+
+  return {
+    ticker, price:d.price, ind, funda, strategies, best,
+    globalVerdict: best ? best.verdict : 'N/A',
+    globalScore: best ? best.score : 0,
+    hardNo,
+    insiderSummary: insiderSummary || null,
+    earningsDays: (earningsDays!=null && earningsDays>=0 && earningsDays<=35) ? Math.ceil(earningsDays) : null,
+  };
+}
+- NYSE_STRATEGIES:
+  (NYSE_STRATEGIES definido en línea 1068 de /opt/axonik/scanner/index.html)
+const NYSE_STRATEGIES = [evalST01,evalST05,evalST06,evalST09,evalST11,evalST15,evalST16];
+const CRYPTO_STRATEGIES = [evalSC01,evalSC02,evalSCPB];
+- CRYPTO_STRATEGIES:
+  (CRYPTO_STRATEGIES definido en línea 1069 de /opt/axonik/scanner/index.html)
+const CRYPTO_STRATEGIES = [evalSC01,evalSC02,evalSCPB];
+
+- applyEventAdjustments:
+  (applyEventAdjustments definido en línea 1074 de /opt/axonik/scanner/index.html)
+function applyEventAdjustments(strategies, mode, funda, insiderSummary, hardNo, rvol1d, rvolMin){
+  let earningsDays = null;
+  if (mode==='NYSE' && funda && funda.next_earnings){
+    const ed = new Date(funda.next_earnings+'T00:00:00Z');
+    earningsDays = (ed - Date.now()) / 86400000;
+  }
+  const insiderScore = (mode==='NYSE' && insiderSummary)
+    ? Math.max(-8, Math.min(8, insiderSummary.insider_score||0)) : 0;
+
+  return strategies.map(s=>{
+    if (!s.applicable) return s;
+    // s.score ya está normalizado a base 100 (mkResult) — los modificadores
+    // de evento se aplican DESPUÉS de normalizar, nunca dentro del raw.
+    let score = s.score;
+    const factors = s.factors.slice();
+    let earningsAdj = 0, insiderAdj = 0;
+
+    if (earningsDays!=null && earningsDays>=0 && (s.group==='swing' || s.group==='medio')){
+      const maxHold = STRATEGY_META[s.id].maxHoldDays;
+      if (earningsDays <= maxHold){
+        earningsAdj = -10;
+        score += earningsAdj;
+        factors.push(f(`Earnings en ${Math.ceil(earningsDays)}d dentro del holding — cierra antes`, 'EVENTO', -10));
+      }
+    }
+    if (insiderScore !== 0){
+      insiderAdj = insiderScore;
+      score += insiderAdj;
+      factors.push(f(`Insider score ${insiderScore>=0?'+':''}${insiderScore}`, 'INSIDER', insiderScore));
+    }
+    if (score === s.score) return s;
+
+    score = Math.max(0, Math.min(100, score));
+    const verdict = finalizeVerdict(score, hardNo, rvol1d, rvolMin);
+    // s.baseScore se conserva tal cual (score normalizado antes de modificadores)
+    // para poder mostrar el desglose "78 (base 82 · insider +4 · earnings -8)".
+    return Object.assign({}, s, {score, earningsAdj, insiderAdj, factors, verdict});
+  });
+}
+- tickerHardNo:
+  (tickerHardNo definido en línea 893 de /opt/axonik/scanner/index.html)
+function tickerHardNo(mode, price, d, settings){
+  if (mode==='NYSE' && price < settings.priceMin) return true;
+  if (!isNaN(d.atrPct) && d.atrPct > settings.atrMax) return true;
+  return false;
+}
+
+=== Pregunta 5b: las piezas que de verdad calculan cada score ===
+--- NYSE_STRATEGIES/CRYPTO_STRATEGIES (Pregunta 5) son solo arrays de
+    referencias a estas 10 funciones evalXX -- sin ellas,
+    evaluateTicker() es un orquestador vacío. STRATEGY_META,
+    finalizeVerdict y f() las usan evaluateTicker()/
+    applyEventAdjustments() -- si tienen lógica no trivial, son
+    igual de necesarias para portar el cálculo real. ---
+- evalST01:
+  (evalST01 definido en línea 899 de /opt/axonik/scanner/index.html)
+function evalST01(ctx){
+  const {ind,funda,hardNo,settings} = ctx;
+  const d=ind['1d'], h=ind['1h'], m=ind['15m'];
+  if (!d||!h||!m) return mkNA('ST-01');
+  let score=0; const factors=[];
+  if (d.ema20>d.ema50 && d.ema50>d.ema200){ score+=25; factors.push(f('EMA20>50>200 alineación alcista','1D',25)); }
+  const pullback = (d.ema20) ? (d.price-d.ema20)/d.ema20*100 : NaN;
+  if (!isNaN(pullback) && pullback>=-2 && pullback<=3){ score+=20; factors.push(f(`Pullback EMA20 ${pullback.toFixed(1)}%`,'1D',20)); }
+  if (d.rsi>=40 && d.rsi<=55){ score+=15; factors.push(f(`RSI ${d.rsi.toFixed(0)} zona pullback`,'1D',15)); }
+  if (d.macdHist>0 && d.macdHist>d.macdHistPrev){ score+=15; factors.push(f('MACD hist positivo creciente','1D',15)); }
+  if (h.rsi>=40 && h.rsi<=60){ score+=5; factors.push(f(`RSI ${h.rsi.toFixed(0)} zona`,'1H',5)); }
+  if (h.macdHist>0 && h.macdHist>h.macdHistPrev){ score+=5; factors.push(f('MACD girando alcista','1H',5)); }
+  if (!isNaN(m.vwap) && m.price>m.vwap){ score+=5; factors.push(f('Precio > VWAP','15M',5)); }
+  if (!isNaN(m.ema20) && m.price>m.ema20){ score+=5; factors.push(f('Precio > EMA20','15M',5)); }
+  if (m.rvol>=1.5){ score+=10; factors.push(f(`RVOL ${m.rvol.toFixed(1)}x`,'15M',10)); }
+  if (funda){
+    if (funda.profit_margin!=null && funda.profit_margin>0.15){ score+=3; factors.push(f('Margen neto >15%','FUND',3)); }
+    if (funda.revenue_growth!=null && funda.revenue_growth>0.10){ score+=2; factors.push(f('Rev growth >10%','FUND',2)); }
+  }
+  return mkResult('ST-01', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalST05:
+  (evalST05 definido en línea 934 de /opt/axonik/scanner/index.html)
+function evalST05(ctx){
+  const {ind,hardNo,settings} = ctx;
+  const d=ind['1d'], m=ind['15m'];
+  if (!d||!m||isNaN(d.gapPct) || Math.abs(d.gapPct)<0.3) return mkNA('ST-05','Sin gap real hoy');
+  let score=0; const factors=[];
+  if (d.gapPct>=1.5){ score+=20; factors.push(f(`Gap alcista +${d.gapPct.toFixed(1)}%`,'1D',20)); }
+  if (d.rvol>=2){ score+=15; factors.push(f(`RVOL 1D ${d.rvol.toFixed(1)}x`,'1D',15)); }
+  if (!isNaN(m.vwap) && m.price>m.vwap){ score+=20; factors.push(f('Precio > VWAP post-gap','15M',20)); }
+  if (m.rvol>=2.5){ score+=20; factors.push(f(`RVOL 15M ${m.rvol.toFixed(1)}x`,'15M',20)); }
+  return mkResult('ST-05', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalST06:
+  (evalST06 definido en línea 946 de /opt/axonik/scanner/index.html)
+function evalST06(ctx){
+  const {ind,hardNo,settings} = ctx;
+  const d=ind['1d'], h=ind['1h'];
+  if (!d||!h||isNaN(d.ema200)) return mkNA('ST-06');
+  const dist = (d.price-d.ema200)/d.ema200*100;
+  if (Math.abs(dist) > 2) return mkNA('ST-06','Precio lejos de EMA200');
+  let score=25; const factors=[f(`Precio en zona EMA200 (${dist.toFixed(1)}%)`,'1D',25)];
+  if (d.rsi>=35 && d.rsi<=50){ score+=20; factors.push(f(`RSI ${d.rsi.toFixed(0)} zona rebote`,'1D',20)); }
+  if (d.price>d.ema200){ score+=15; factors.push(f('Precio > EMA200','1D',15)); }
+  if (h.rvol>=1.5){ score+=15; factors.push(f(`RVOL 1H ${h.rvol.toFixed(1)}x`,'1H',15)); }
+  return mkResult('ST-06', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalST09:
+  (evalST09 definido en línea 959 de /opt/axonik/scanner/index.html)
+function evalST09(ctx){
+  const {ind,hardNo,settings} = ctx;
+  const d=ind['1d'], h=ind['1h'], m=ind['15m'];
+  if (!d||!h||!m||d.candles.length<22) return mkNA('ST-09');
+  const vols = d.candles.map(c=>c.v);
+  const prevVol = vols[vols.length-2];
+  const prevAvg20 = vols.slice(-22,-2).reduce((a,b)=>a+b,0)/20;
+  const rvolPrev = prevAvg20>0 ? prevVol/prevAvg20 : NaN;
+  const prevC = d.candles[d.candles.length-2];
+  const rangeClose = (prevC.h-prevC.l)>0 ? (prevC.c-prevC.l)/(prevC.h-prevC.l) : NaN;
+  if (isNaN(rvolPrev) || rvolPrev < 1.3) return mkNA('ST-09','Sesión anterior sin RVOL alto');
+  let score=0; const factors=[];
+  if (rvolPrev>=1.8){ score+=20; factors.push(f(`RVOL sesión anterior ${rvolPrev.toFixed(1)}x`,'1D',20)); }
+  if (!isNaN(rangeClose) && rangeClose>=0.8){ score+=15; factors.push(f(`Cierre en ${(rangeClose*100).toFixed(0)}% del rango`,'1D',15)); }
+  if (d.rsi>=55 && d.rsi<=70){ score+=15; factors.push(f(`RSI ${d.rsi.toFixed(0)} momentum`,'1D',15)); }
+  if (h.macdHist>0){ score+=15; factors.push(f('MACD 1H positivo','1H',15)); }
+  if (!isNaN(m.vwap) && m.price>m.vwap){ score+=15; factors.push(f('Precio > VWAP sesión','15M',15)); }
+  return mkResult('ST-09', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalST11:
+  (evalST11 definido en línea 979 de /opt/axonik/scanner/index.html)
+function evalST11(ctx){
+  const {ind,funda,hardNo,settings} = ctx;
+  const d=ind['1d'];
+  if (!d||!funda||funda.fifty_two_week_high==null) return mkNA('ST-11','Sin fundamentales/52W high');
+  const high = funda.fifty_two_week_high;
+  const pct = (d.price-high)/high*100;
+  if (pct < -15) return mkNA('ST-11','Lejos del 52W high');
+  let score=0; const factors=[];
+  if (pct >= -5){ score+=25; factors.push(f(`${pct.toFixed(1)}% del 52W high (<5%)`,'1D',25)); }
+  else if (pct >= -10){ score+=15; factors.push(f(`${pct.toFixed(1)}% del 52W high (<10%)`,'1D',15)); }
+  if (d.rsi < 75){ score+=15; factors.push(f(`RSI ${d.rsi.toFixed(0)} < 75`,'1D',15)); }
+  if (funda.revenue_growth!=null && funda.revenue_growth>0.10){ score+=15; factors.push(f('Rev growth >10%','FUND',15)); }
+  if (d.rvol>=1.5){ score+=15; factors.push(f(`RVOL ${d.rvol.toFixed(1)}x`,'1D',15)); }
+  return mkResult('ST-11', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalST15:
+  (evalST15 definido en línea 995 de /opt/axonik/scanner/index.html)
+function evalST15(ctx){
+  const {ind,hardNo,settings} = ctx;
+  const d=ind['1d'];
+  if (!d||isNaN(d.adx) || d.adx<15 || d.adx>40) return mkNA('ST-15','ADX fuera de rango de inicio de tendencia');
+  let score=0; const factors=[];
+  if (d.adx>=20 && d.adx<=35 && d.diPlus>d.diMinus){ score+=25; factors.push(f(`ADX ${d.adx.toFixed(0)} DI+>DI-`,'1D',25)); }
+  if (d.rvol>=1.8){ score+=15; factors.push(f(`RVOL ${d.rvol.toFixed(1)}x`,'1D',15)); }
+  if (d.price>d.ema20){ score+=15; factors.push(f('Precio > EMA20','1D',15)); }
+  if (d.rsi>=55 && d.rsi<=70){ score+=10; factors.push(f(`RSI ${d.rsi.toFixed(0)}`,'1D',10)); }
+  return mkResult('ST-15', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalST16:
+  (evalST16 definido en línea 1007 de /opt/axonik/scanner/index.html)
+function evalST16(ctx){
+  const {ind,hardNo,settings} = ctx;
+  const d=ind['1d'], h=ind['1h'], m=ind['15m'];
+  if (!d||!h||!m||isNaN(h.compression) || h.compression>3) return mkNA('ST-16','Sin compresión real');
+  let score=0; const factors=[];
+  if (d.ema20>d.ema50){ score+=20; factors.push(f('Tendencia EMA20>50','1D',20)); }
+  if (h.compression<=2){ score+=20; factors.push(f(`Compresión ${h.compression.toFixed(1)}% (6 velas)`,'1H',20)); }
+  if (m.rvol>=2){ score+=20; factors.push(f(`RVOL ruptura ${m.rvol.toFixed(1)}x`,'15M',20)); }
+  if (!isNaN(m.ema200) && m.price>m.ema200){ score+=15; factors.push(f('Precio > EMA200','15M',15)); }
+  return mkResult('ST-16', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalSC01:
+  (evalSC01 definido en línea 1019 de /opt/axonik/scanner/index.html)
+function evalSC01(ctx){
+  const {ind,hardNo,settings,ticker} = ctx;
+  if (ticker!=='BTC' && ticker!=='ETH') return mkNA('SC-01','Solo BTC/ETH');
+  const d=ind['1d'], m=ind['15m'];
+  if (!d) return mkNA('SC-01');
+  let score=0; const factors=[];
+  const squeezeResolved = !isNaN(d.compression) && d.compression<=6 && d.rvol>=2.5;
+  if (squeezeResolved){ score+=20; factors.push(f(`Squeeze resuelto, RVOL ${d.rvol.toFixed(1)}x`,'1D',20)); }
+  if (d.rsi>=55 && d.rsi<=70){ score+=15; factors.push(f(`RSI ${d.rsi.toFixed(0)}`,'1D',15)); }
+  if (d.macdHist>0){ score+=15; factors.push(f('MACD positivo','1D',15)); }
+  if (m && !isNaN(m.vwap) && m.price>m.vwap){ score+=15; factors.push(f('Precio > VWAP','15M',15)); }
+  return mkResult('SC-01', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalSC02:
+  (evalSC02 definido en línea 1033 de /opt/axonik/scanner/index.html)
+function evalSC02(ctx){
+  const {ind,hardNo,settings,ticker,btcGateOn} = ctx;
+  if (ticker==='BTC' || ticker==='ETH') return mkNA('SC-02','Solo altcoins');
+  if (!btcGateOn) return mkNA('SC-02','Gate BTC OFF');
+  const d=ind['1d'], h=ind['1h'];
+  if (!d||!h) return mkNA('SC-02');
+  let score=0; const factors=[];
+  if (d.price>d.ema50){ score+=20; factors.push(f('Precio > EMA50','1D',20)); }
+  if (d.ema20>d.ema50){ score+=15; factors.push(f('EMA20 > EMA50','1D',15)); }
+  if (d.rsi<60){ score+=15; factors.push(f(`RSI ${d.rsi.toFixed(0)} < 60`,'1D',15)); }
+  if (d.rvol>=1.5){ score+=15; factors.push(f(`RVOL ${d.rvol.toFixed(1)}x`,'1D',15)); }
+  if (h.macdHist>0){ score+=15; factors.push(f('MACD 1H positivo','1H',15)); }
+  return mkResult('SC-02', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- evalSCPB:
+  (evalSCPB definido en línea 1048 de /opt/axonik/scanner/index.html)
+function evalSCPB(ctx){
+  const {ind,hardNo,settings,btcGateOn} = ctx;
+  if (!btcGateOn) return mkNA('SC-PB','Gate BTC OFF');
+  const d=ind['1d'], h=ind['1h'], m=ind['15m'];
+  if (!d||!h||!m) return mkNA('SC-PB');
+  let score=0; const factors=[];
+  if (d.ema20>d.ema50 && d.ema50>d.ema200){ score+=25; factors.push(f('EMA 20>50>200','1D',25)); }
+  const pullback = d.ema20 ? (d.price-d.ema20)/d.ema20*100 : NaN;
+  if (!isNaN(pullback) && pullback>=-3 && pullback<=2){ score+=20; factors.push(f(`Pullback EMA20 ${pullback.toFixed(1)}%`,'1D',20)); }
+  if (d.rsi>=40 && d.rsi<=55){ score+=15; factors.push(f(`RSI ${d.rsi.toFixed(0)}`,'1D',15)); }
+  if (h.macdHist>0 && h.macdHist>h.macdHistPrev){ score+=10; factors.push(f('MACD 1H girando alcista','1H',10)); }
+  if (m.rvol>=1.5){ score+=10; factors.push(f(`RVOL 15M ${m.rvol.toFixed(1)}x`,'15M',10)); }
+  return mkResult('SC-PB', score, factors, true, hardNo, d.rvol, settings.rvolMin);
+}
+- STRATEGY_META:
+  (STRATEGY_META definido en línea 614 de /opt/axonik/scanner/index.html)
+const STRATEGY_META = {
+  'ST-01': {name:'Pullback a Tendencia', group:'swing', holding:'1-5 días', maxHoldDays:5},
+  'ST-04': {name:'MACD Triple Confluencia', group:'medio', holding:'1-4 sem', maxHoldDays:28},
+  'ST-05': {name:'Gap Continuidad', group:'intraday', holding:'30m-4h', maxHoldDays:0},
+  'ST-06': {name:'Rebote EMA200', group:'swing', holding:'1-4 sem', maxHoldDays:28},
+  'ST-09': {name:'Swing 2D Momentum', group:'swing', holding:'2-3 días', maxHoldDays:3},
+  'ST-11': {name:'Proximidad 52W High', group:'medio', holding:'1-4 sem', maxHoldDays:28},
+  'ST-15': {name:'ADX Breakout', group:'medio', holding:'1-4 sem', maxHoldDays:28},
+  'ST-16': {name:'Compresión en Tendencia', group:'swing', holding:'1-3 días', maxHoldDays:3},
+  'SC-01': {name:'BTC Explosivo', group:'crypto', holding:'1-5 días', maxHoldDays:5},
+  'SC-02': {name:'Altcoin Rotation', group:'crypto', holding:'1-5 días', maxHoldDays:5},
+  'SC-PB': {name:'Pullback + Gate BTC', group:'crypto', holding:'2-7 días', maxHoldDays:7},
+};
+- finalizeVerdict:
+  (finalizeVerdict definido en línea 873 de /opt/axonik/scanner/index.html)
+function finalizeVerdict(score, hardNo, rvol1d, rvolMin){
+  let verdict;
+  if (hardNo || score < 55) verdict = 'NO';
+  else if (score >= 70) verdict = 'OPERAR';
+  else verdict = 'VIGILAR';
+  if (verdict==='OPERAR' && !isNaN(rvol1d) && rvol1d < rvolMin) verdict = 'VIGILAR';
+  return verdict;
+}
+- f:
+  (f definido en línea 871 de /opt/axonik/scanner/index.html)
+function f(text, tf, points){ return {text, tf, points}; }
+
+
+=== Pregunta 5c: mkResult y mkNA -- las 10 evalXX terminan devolviendo una de las dos ===
+--- Cada evalXX acaba en mkResult(...) o mkNA(...). Ninguna de las dos
+    estaba en la lista de 5b. No son triviales: evaluateTicker() hace
+    Object.assign({}, r, STRATEGY_META[r.id]) sobre lo que devuelven,
+    así que r.score/r.factors/r.applicable/r.verdict salen de aquí --
+    probablemente mkResult llama a finalizeVerdict internamente. ---
+- mkResult:
+  (mkResult definido en línea 881 de /opt/axonik/scanner/index.html)
+function mkResult(id, score, factors, applicable, hardNo, rvol1d, rvolMin){
+  if (!applicable) return {id, score:0, baseScore:0, factors, applicable, verdict:'N/A'};
+  const maxRaw = MAX_RAW_SCORE[id];
+  let normalized = maxRaw>0 ? Math.round(score/maxRaw*100) : 0;
+  normalized = Math.max(0, Math.min(100, normalized));
+  const verdict = finalizeVerdict(normalized, hardNo, rvol1d, rvolMin);
+  return {id, score: normalized, baseScore: normalized, rawScore: score, maxRawScore: maxRaw,
+          factors, applicable, verdict};
+}
+- mkNA:
+  (mkNA definido en línea 890 de /opt/axonik/scanner/index.html)
+function mkNA(id, reason){
+  return {id, score:0, baseScore:0, factors:[], applicable:false, verdict:'N/A', naReason: reason||'No aplica en este momento'};
+}
+
+=== Pregunta 5d: MAX_RAW_SCORE -- mkResult normaliza score/MAX_RAW_SCORE[id]*100 ===
+--- Cuarta capa encontrada al revisar mkResult (Pregunta 5c). Sin esta
+    tabla no se sabe el denominador de normalización por estrategia --
+    tan necesaria como STRATEGY_META. ---
+  (MAX_RAW_SCORE definido en línea 608 de /opt/axonik/scanner/index.html)
+const MAX_RAW_SCORE = {
+  'ST-01': 110, 'ST-04': 85, 'ST-05': 75, 'ST-06': 75, 'ST-09': 80,
+  'ST-11': 70, 'ST-15': 65, 'ST-16': 75,
+  'SC-01': 65, 'SC-02': 80, 'SC-PB': 80,
+};
+
+=== Pregunta 6a: cabecera del proxy -- imports + instanciación de la app FastAPI ===
+--- Para escribir POST /api/evaluate-ticker (paso 3, decisión 04/10/2026)
+    hace falta saber el nombre real de la variable 'app', el estilo de
+    import (Pydantic v1 vs v2, 'from fastapi import ...') y si ya existe
+    algún Depends/auth compartido que el endpoint nuevo debería seguir --
+    nunca visto el archivo completo, no se inventa el patrón. ---
+#!/usr/bin/env python3
+"""
+AXONIK Market Data Proxy — server-side yfinance proxy con CORS abierto.
+
+Sirve datos OHLCV de NYSE/NASDAQ vía yfinance para que el scanner HTML
+(browser-side) pueda consumirlos sin toparse con las restricciones CORS
+de FMP. Servicio independiente — no importa de technical_validator.py.
+
+Puerto: 8002
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import math
+import os
+import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from threading import Lock
+
+import psycopg2
+import psycopg2.pool
+import requests
+import yfinance as yf
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from psycopg2.extras import Json, RealDictCursor
+from pydantic import BaseModel, Field
+from typing import Optional
+import evaluate_ticker_logic as etl
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# ─── Config ────────────────────────────────────────────────────────────────
+
+SCANNER_DIR = Path("/opt/axonik/scanner")
+
+DB_CONFIG = dict(
+    host=os.environ.get("DB_HOST", "127.0.0.1"),
+    port=int(os.environ.get("DB_PORT", "5432")),
+    dbname=os.environ.get("DB_NAME", "axonik"),
+    user=os.environ.get("DB_USER", "axonik"),
+    password=os.environ.get("DB_PASSWORD", ""),
+)
+STRATEGY_VERSION = "v4.1"  # bump: normalización de score a base 100 (MAX_RAW_SCORE por estrategia), ver engine.py
+
+FINVIZ_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+FINVIZ_TIMEOUT_SEC = 8
+
+=== Pregunta 6b: decorador real de create_snapshot() y scan_batch() ===
+--- print_python_def ya volcó los cuerpos (Pregunta 4b/4c) pero localiza
+    por 'def', no por el '@app.post(...)' de la línea anterior -- nunca
+    se vio ese decorador. Necesario para que el endpoint nuevo use el
+    mismo estilo (ruta, Depends si lo hay, response_model si lo hay). ---
+- líneas 1044-1049 (decorador + firma):
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{field} debe ser ISO8601 válido")
+
+
+@app.post("/api/snapshots")
+async def create_snapshot(req: SnapshotCreateRequest):
+- líneas 939-944 (decorador + firma):
+    tickers: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_TICKERS)
+    timeframes: list[str] = Field(default_factory=lambda: ["1d", "1h", "15m"])
+
+
+@app.post("/api/scan-batch")
+async def scan_batch(req: ScanBatchRequest):
+
+=== Pregunta 6c: modelos Pydantic -- repetición de la Pregunta 4a ===
+--- La salida de la Pregunta 4a se pegó directamente en el chat (nunca
+    se comitió a un archivo), así que ya no está disponible en esta
+    sesión tras el resumen de contexto. Se repite aquí para no asumir
+    nombres de campo de memoria -- en concreto, confirmar si
+    ScanBatchRequest usa 'tickers' o algo distinto (en
+    snapshot_autocapture.py se cambió 'scanner_ids' a 'tickers' como
+    SUPOSICIÓN, no una cita literal). ---
+- definida en línea 687:
+class CircuitBreakerBreach(BaseModel):
+    drawdown_pct: float
+
+
+- definida en línea 869:
+class FundamentalsBatchRequest(BaseModel):
+    tickers: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_TICKERS)
+
+
+- definida en línea 938:
+class ScanBatchRequest(BaseModel):
+    tickers: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_TICKERS)
+    timeframes: list[str] = Field(default_factory=lambda: ["1d", "1h", "15m"])
+
+
+- definida en línea 974:
+class EvaluateTickerRequest(BaseModel):
+    ticker: str
+    mode: str  # "NYSE" | "CRYPTO"
+    # Shape consumido por evaluate_ticker_logic: {"1d": {...}, "1h": {...},
+    # "15m": {...}}. Deliberadamente `dict` sin sub-modelo tipado campo a
+    # campo: evaluate_ticker_logic ya hace .get() con fallback a NaN sobre
+    # estas claves (mismo diseño que el JS original), y el shape real de
+    # get_ticker_data() sigue sin confirmar (ver docstring de arriba) —
+    # un esquema Pydantic estricto aquí solo añadiría una SEGUNDA
+    # definición de la forma de "ind" que podría divergir de la real.
+    ind: dict
+    funda: Optional[dict] = None
+    settings: dict  # CONFIRMADO (Pregunta 6d): DEFAULT_SETTINGS real, ver docstring arriba.
+    btc_gate_on: bool = False
+    insider_summary: Optional[dict] = None
+
+
+
+- definida en línea 1018:
+class SnapshotCreateRequest(BaseModel):
+    ticker: str
+    market: str
+    trigger_type: str
+    snapshot_ts: str
+    data_ts: str
+    strategies: list[dict] = Field(..., min_length=1)
+    temporal_group: str
+    best_score: int
+    strategy_version: str = STRATEGY_VERSION
+    params_snapshot: dict
+    entry_price: float
+    stop_price: float
+    ema20_daily: float | None = None
+    atr_daily: float | None = None
+    risk_per_share: float
+    indicators: dict | None = None
+    fundamentals: dict | None = None
+    market_regime: str | None = None
+    regime_ref_price: float | None = None
+    universe_size: int | None = None
+
+
+- definida en línea 1284:
+class CloseSnapshotRequest(BaseModel):
+    exit_price: float
+    exit_reason: str = "MANUAL"
+    notes: str | None = None
+
+
+
+=== Pregunta 6d: de dónde salen los valores reales de settings (priceMin/atrMax/rvolMin) ===
+--- evaluateTicker()/tickerHardNo() usan settings.priceMin/.atrMax/
+    .rvolMin (ya visto en 5/5b/5c), pero vienen de state.settings en el
+    navegador -- nunca se vio dónde se inicializa ese objeto ni sus
+    valores por defecto. Sin esto, snapshot_autocapture.py no tiene qué
+    settings reales pasarle al endpoint nuevo. ---
+671:const DEFAULT_SETTINGS = {capital:10000, riskPct:0.5, priceMin:8, atrMax:4, rvolMin:1};
+873:function finalizeVerdict(score, hardNo, rvol1d, rvolMin){
+878:  if (verdict==='OPERAR' && !isNaN(rvol1d) && rvol1d < rvolMin) verdict = 'VIGILAR';
+881:function mkResult(id, score, factors, applicable, hardNo, rvol1d, rvolMin){
+886:  const verdict = finalizeVerdict(normalized, hardNo, rvol1d, rvolMin);
+1074:function applyEventAdjustments(strategies, mode, funda, insiderSummary, hardNo, rvol1d, rvolMin){
+1107:    const verdict = finalizeVerdict(score, hardNo, rvol1d, rvolMin);
+2480:  const settingMap = {setCapital:'capital', setRisk:'riskPct', setPriceMin:'priceMin', setAtrMax:'atrMax', setRvolMin:'rvolMin'};
+
+=== Pregunta 7: fetchAllNyse / fetchAllCrypto -- de dónde sale 'price' en ind['1d'] ===
+--- La verificación navegador-vs-endpoint con AAPL real dio KeyError:
+    'price'. d=ind['1d'] del /api/scan-batch real solo tiene 'candles' y
+    'periods' -- NO 'price'. evaluateTicker() recibe rEntry.ind desde
+    runScan() (ya extraída, Pregunta 2a), que viene de
+    fetchAllNyse()/fetchAllCrypto() -- nunca extraídas ni leídas. Sospecha:
+    esas funciones derivan 'price' (y quizá otros campos) ANTES de pasarle
+    los datos a evaluateTicker() -- si es así, el endpoint nuevo tiene que
+    replicar esa misma transformación, no reenviar el 'data' crudo de
+    scan-batch tal cual. No se reintenta la verificación hasta confirmar
+    esto con el texto literal, no una suposición más. ---
+- fetchAllNyse:
+  (fetchAllNyse definido en línea 1310 de /opt/axonik/scanner/index.html)
+async function fetchAllNyse(tickers, onProgress){
+  const results = {};
+  for (let i=0;i<tickers.length;i+=4){
+    const batch = tickers.slice(i,i+4);
+    await Promise.all(batch.map(async t=>{
+      try{ results[t] = {ind: await fetchNyseTicker(t), funda:null, insiders:null}; }
+      catch(e){ results[t] = {ind:null, funda:null, insiders:null, error: e.message||'error'}; }
+    }));
+    onProgress(`Técnico ${Math.min(i+4,tickers.length)}/${tickers.length}...`);
+    await sleep(500);
+  }
+  for (let i=0;i<tickers.length;i+=4){
+    const batch = tickers.slice(i,i+4).filter(t=>results[t] && results[t].ind);
+    await Promise.all(batch.map(async t=>{ results[t].funda = await fetchFundamentals(t); }));
+    onProgress(`Fundamental ${Math.min(i+4,tickers.length)}/${tickers.length}...`);
+    await sleep(500);
+  }
+  for (let i=0;i<tickers.length;i+=4){
+    const batch = tickers.slice(i,i+4).filter(t=>results[t] && results[t].ind);
+    await Promise.all(batch.map(async t=>{ results[t].insiders = await fetchInsiders(t); }));
+    onProgress(`Insiders ${Math.min(i+4,tickers.length)}/${tickers.length}...`);
+    await sleep(500);
+  }
+  return results;
+}
+- fetchAllCrypto:
+  (fetchAllCrypto definido en línea 1370 de /opt/axonik/scanner/index.html)
+async function fetchAllCrypto(tickers, onProgress){
+  const results = {};
+  for (let i=0;i<tickers.length;i+=3){
+    const batch = tickers.slice(i,i+3);
+    await Promise.all(batch.map(async t=>{
+      try{ results[t] = {ind: await fetchCryptoTicker(t), funda:null}; }
+      catch(e){ results[t] = {ind:null, funda:null, error: e.message||'error'}; }
+    }));
+    onProgress(`Crypto ${Math.min(i+3,tickers.length)}/${tickers.length}...`);
+    await sleep(500);
+  }
+  return results;
+}
+
+=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6 y 7 -- hasta
+    confirmar qué transformación aplica fetchAllNyse/fetchAllCrypto antes de
+    evaluateTicker(), no se reintenta la verificación navegador-vs-endpoint. ===

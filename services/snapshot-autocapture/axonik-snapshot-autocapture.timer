@@ -1,0 +1,18 @@
+[Unit]
+Description=AXONIK - timer de captura automatica de snapshots (16:00-18:00 Madrid, L-V)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:00:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 16:15:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 16:30:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 16:45:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:00:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:15:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:30:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:45:00 Europe/Madrid
+AccuracySec=30s
+Persistent=false
+Unit=axonik-snapshot-autocapture.service
+
+[Install]
+WantedBy=timers.target

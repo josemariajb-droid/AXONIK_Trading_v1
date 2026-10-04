@@ -33,7 +33,13 @@ Abreviatura usada: **DOC-IDEM** =
   despliegue y una verificación que fuerce dos ejecuciones simultáneas con un
   snapshot pendiente de prueba y compruebe que se escribe 1 sola fila.
 
-### 2. [BAJA] Puerto 8002 (`market_data_proxy.py`) sin autenticación y con CORS abierto
+### 2. [ALTA] Puerto 8002 (`market_data_proxy.py`) sin autenticación y con CORS abierto
+
+> Prioridad subida de BAJA a ALTA el 03/10/2026: el diseño de
+> `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` añade un
+> proceso automático nuevo que llama a este proxy sin supervisión humana en
+> cada ejecución — no tiene sentido construir más automatización sobre un
+> endpoint que hoy solo protege el firewall.
 
 - **Descripción:** el proxy (FastAPI con uvicorn, como root, unit
   `axonik-market-proxy`) escucha en `0.0.0.0:8002` sin autenticación en ningún
@@ -47,7 +53,11 @@ Abreviatura usada: **DOC-IDEM** =
 - **Hallazgo original:** DOC-IDEM, "Hallazgo 4 — `market_data_proxy`
   expuesto en `0.0.0.0:8002` sin autenticación", más la "Comprobación previa
   al despliegue" del Addendum 3.
-- **Estado:** INFORME, no corregido.
+- **Estado:** DISEÑO (antes INFORME) — decisión tomada: bind a `127.0.0.1`
+  en vez de token (§3.4/§1.6 de
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md`). Patch de
+  una línea + pasos de despliegue en
+  `services/snapshot-autocapture/README.md`, sin aplicar todavía.
 - **Para cerrarlo:** añadir autenticación real en el servicio, no depender solo
   del firewall. Como mínimo, los endpoints de escritura deben exigir un token
   y el frontend `/scanner` debe enviarlo. Además, restringir el CORS al
@@ -101,6 +111,441 @@ Abreviatura usada: **DOC-IDEM** =
 - **Para cerrarlo:** diseño, revisión y despliegue. La verificación consiste
   en simular un fallo tras un append correcto y comprobar que el reintento no
   duplica la fila.
+
+### 5. [MEDIA] Automatizar `autoCaptureSnapshots()` (reemplazar la dependencia del navegador)
+
+- **Descripción:** la captura de snapshots depende hoy de tener el scanner
+  HTML abierto con auto-refresh en el navegador. Diseño +
+  **implementación real** (sin Playwright, confirmado) en
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` y
+  `services/snapshot-autocapture/`.
+- **Hallazgo original:** este documento (03/10/2026), a partir de la
+  investigación ya existente en DOC-IDEM Addendum 2 §1.2.
+- **Estado:** IMPLEMENTADO (parcial), NO DESPLEGADO, BLOQUEADO por un gap
+  real. Bloqueante de Playwright cerrado (`detectAutoTrigger`/
+  `evaluateTicker`/`NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`/
+  `applyEventAdjustments`/`tickerHardNo`, confirmados como aritmética/
+  orquestación pura sin DOM — pero solo confirmado que son "limpias", no
+  su contenido). Pregunta 4 ejecutada contra el código real: 2 de 3
+  puntos estimados se corrigieron (`risk_pct` → `risk_per_share` — era
+  un error real, no solo una estimación sin confirmar; umbral único →
+  dos ramas `AUTO_HIGH`/`AUTO_MULTI`), pero reveló que el cálculo del
+  score en sí nunca se portó — `/api/scan-batch` devuelve indicadores en
+  bruto, no un score precalculado como asumía el script.
+  `evaluate_ticker()` es ahora un `NotImplementedError` explícito.
+  Depende también de la entrada 2 de este backlog (bind a `127.0.0.1`,
+  patch listo, no aplicado).
+- **Decisión de arquitectura (04/10/2026):** no se porta `evaluate_ticker()`
+  dentro de `snapshot_autocapture.py`. Se expone `POST /api/evaluate-ticker`
+  nuevo en `market_data_proxy.py` — single source of truth server-side, en
+  vez de dos implementaciones (navegador y script Python) que puedan
+  divergir en silencio, como ya pasó con `signal_hash` y con
+  `risk_pct`/`risk_per_share`.
+- **Cadena de dependencias cerrada (04/10/2026):** 4 rondas de extracción
+  dirigida (Preguntas 5/5b/5c/5d) llegaron a 22 piezas con texto literal,
+  fondo confirmado en `MAX_RAW_SCORE` (objeto literal, sin más llamadas).
+  Puerto a Python entregado en
+  `services/snapshot-autocapture/evaluate_ticker_logic.py`, con 10
+  pruebas unitarias (todas pasan) — detalle en el documento de diseño §1.7.
+- **BLOQUEADO por un hallazgo estructural nuevo, no uno de datos:**
+  `evaluateTicker()` real evalúa las 7 estrategias NYSE (o las 3 crypto)
+  fijas por `mode` en una sola llamada por *ticker* — no una llamada por
+  (ticker, scanner) como asumía el diseño de `cargar_universo_de_scanners()`.
+  `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES` son arrays fijos en el código, no
+  se filtran por `02_SCANNERS.ESTADO` en tiempo de ejecución. Falta
+  decidir de dónde sale el universo de *tickers* a evaluar (no de
+  estrategias) antes de cablear el endpoint a `snapshot_autocapture.py` —
+  ver documento de diseño §1.8. `ST-04` tiene entrada en `STRATEGY_META`/
+  `MAX_RAW_SCORE` pero no está en `NYSE_STRATEGIES` — no se evalúa hoy en
+  ningún `autoCaptureSnapshots()`, señalado sin interpretar más.
+- **Verificación de `11_LISTAS` como fuente del universo de tickers
+  (04/10/2026):** descartada. Contenido real confirmado leyendo
+  `11_LISTAS.csv` (snapshot del 21/09/2026, exportado de
+  `AXONIK Decision Engine v2.xlsx`): la hoja es un catálogo de 22 columnas
+  `rng_*` (`rng_markets`, `rng_categories`, `rng_timeframes`,
+  `rng_strategy_type`, `rng_indicators`, `rng_sectors`, `rng_brokers`,
+  `rng_exchanges`, etc.) con valores enumerados para listas desplegables
+  (`ACCIONES_US`, `MOMENTUM`, `1m`, `LONG`, `EMA20`, `TECNOLOGIA`, `IBKR`,
+  `NYSE`, `WIN`...). Ninguna columna contiene símbolos de ticker
+  individuales (`AAPL`, `GOOGL`, `BTC`...) — es catálogo de categorías, no
+  una lista de tickers. Decisión tomada a continuación: lista nueva en
+  hoja propia, no en `11_LISTAS`.
+- **Decisión del universo de tickers (04/10/2026):** hoja nueva
+  `14_UNIVERSO_TICKERS` en el Decision Engine (no JSON estático, no
+  `localStorage`). Columnas, esquema **aprobado** 04/10/2026: `TICKER`,
+  `MERCADO` (`NYSE`/`CRYPTO`), `ESTADO` (`ACTIVO`/`PAUSADO`, misma lógica
+  de activación que `02_SCANNERS.ESTADO`), `FECHA_ALTA`, `NOTAS` (texto
+  libre, mismo patrón que `05_OPERACIONES.NOTAS`). Esquema final y fila
+  propuesta para `00_README` documentados en el diseño §1.9. Sustituye a
+  `cargar_universo_de_scanners()`/`02_SCANNERS.ESTADO` como fuente del
+  universo para esta automatización (`02_SCANNERS` sigue existiendo para
+  lo demás).
+- **Hoja real creada (04/10/2026, por el usuario a mano):** confirmado
+  por el usuario contra el archivo descargado de Drive — `14_UNIVERSO_TICKERS`
+  existe en el Excel real (mismo ID de siempre) con cabeceras
+  `TICKER/MERCADO/ESTADO/FECHA_ALTA/NOTAS`, vacía; fila de `00_README`
+  también añadida. Bloqueante de herramienta (esta sesión no puede
+  escribir en el Google Sheet real — ver nota anterior) queda sin efecto
+  porque el usuario lo hizo directamente.
+- **Código actualizado (04/10/2026):** `cargar_universo_de_tickers()` en
+  `services/snapshot-autocapture/snapshot_autocapture.py` lee
+  `14_UNIVERSO_TICKERS` filtrando `ESTADO='ACTIVO'`, reemplaza a
+  `cargar_universo_de_scanners()`/`02_SCANNERS` del todo. Esto también
+  resuelve el hallazgo estructural de §1.8: con el universo en
+  ticker+mercado directo, el bucle de `main()` pasa a ser una llamada
+  por *ticker* (no por (ticker, scanner)), que es justo el modelo real
+  de `evaluateTicker()`. De paso se quitó la reimplementación local
+  (con bug de unión de ramas) de la detección de disparo y se usa
+  directamente `evaluate_ticker_logic.detect_auto_trigger()`, ya
+  corregido y con pruebas, en vez de mantener una tercera copia.
+  **Sigue sin resolver, fuera del alcance de este paso:** el shape de
+  petición real de `POST /api/scan-batch` (se cambió `"scanner_ids"` a
+  `"tickers"` por ser la lectura obvia con el universo nuevo, pero es
+  una suposición, no una cita literal — confirmar antes del
+  `--dry-run`); y de dónde salen `entry_price`/`stop_price`/
+  `risk_per_share` (no están en el shape de
+  `evaluate_ticker_logic.evaluate_ticker()`, confirmado leyendo su
+  código). `evaluate_ticker()` sigue siendo `NotImplementedError`
+  explícito, pendiente del paso (3).
+- **Paso 3 — Pregunta 6 confirmada contra el código real (04/10/2026,
+  `docs/pipeline/pregunta6_salida.txt`, commit `2b300ac`):**
+  - **6a/6b:** `app` es el nombre real de la variable FastAPI; Pydantic
+    v2 (`BaseModel, Field`, sintaxis `tipo | None`); `HTTPException` ya
+    importado. Ningún endpoint de escritura usa `Depends` ni
+    `response_model` hoy — mismo estilo simple (`@app.post("/api/...")`
+    + `async def handler(req: Model):`) que `create_snapshot`/
+    `scan_batch`, confirmado literal.
+  - **6c:** `ScanBatchRequest.tickers` — confirma que `fetch_scan_batch()`
+    ya usaba el campo correcto. Ya no es una suposición.
+  - **6d:** `DEFAULT_SETTINGS` real:
+    `{capital:10000, riskPct:0.5, priceMin:8, atrMax:4, rvolMin:1}`.
+    **El placeholder de `SETTINGS` en `snapshot_autocapture.py` tenía
+    `atrMax=6` — era incorrecto, corregido a 4.** Nota aparte: son
+    defaults del navegador, editables en su UI y persistidos solo en su
+    `localStorage` — no hay una fuente server-side única si el usuario
+    los cambió a mano ahí.
+  - De paso, la Pregunta 6 también re-confirmó literal que `detectAutoTrigger`
+    agrupa por `s.group` (no un campo separado "temporal_group") — ya
+    coincidía con `evaluate_ticker_logic.detect_auto_trigger()`, ahora
+    sin la salvedad de "lectura, no cita literal".
+  - `evaluate_ticker_endpoint.py` actualizado con el código final
+    (ya no comentado) y `SETTINGS` corregido en `snapshot_autocapture.py`.
+    **Sigue NO aplicado a `market_data_proxy.py` real** — instrucciones
+    exactas de dónde pegarlo en `services/snapshot-autocapture/README.md`
+    (Paso 1b), pendientes de que alguien con acceso al Hetzner las
+    ejecute.
+  - Verificado con un smoke test con `requests.post` mockeado: el flujo
+    completo (`evaluate_ticker()` → `detect_auto_trigger()` →
+    `construir_payload_snapshot()`) encaja sin errores.
+  - **Verificación navegador-vs-endpoint con datos reales: EJECUTADA,
+    encontró un bug real — BLOQUEADA, no reintentar todavía.** Con
+    AAPL real: `KeyError: 'price'`. `d = ind['1d']` del `/api/scan-batch`
+    real solo tiene `candles` y `periods` — **no** `price`, ni el resto
+    de campos derivados (`ema20/50/200`, `rsi`, `macdHist`, `rvol`,
+    `gapPct`, `adx`...) que los 10 `evalXX` esperan directamente en `d`.
+    Sospecha, sin confirmar todavía: en `runScan()` (ya extraída,
+    Pregunta 2a), `evaluateTicker()` recibe `rEntry.ind` — no la
+    respuesta cruda del batch — que viene de
+    `fetchAllNyse()`/`fetchAllCrypto()`, **nunca extraídas ni leídas**.
+    Es probable que esas funciones calculen `price` y los demás
+    indicadores derivados a partir de `candles`/`periods` ANTES de
+    pasarle los datos a `evaluateTicker()`. Si se confirma, el endpoint
+    nuevo tiene que replicar esa misma transformación — no reenviar el
+    `"data"` crudo de `scan-batch` tal cual, que es lo que hace hoy
+    `evaluate_ticker()` en `snapshot_autocapture.py`.
+  - **Pregunta 7 confirmada (04/10/2026, `docs/pipeline/pregunta7_salida.txt`,
+    commit `6ec4f00`): `fetchAllNyse`/`fetchAllCrypto` NO derivan
+    `price` ellas mismas.** Son solo orquestación de batching (lotes de
+    4/3 tickers, `onProgress`, `sleep(500)` entre lotes) que delega en
+    `fetchNyseTicker(t)`/`fetchCryptoTicker(t)` para `ind`, y por
+    separado en `fetchFundamentals(t)`/`fetchInsiders(t)` para
+    `funda`/`insiders`. **Ninguna de esas cuatro está entre las piezas
+    ya confirmadas** — mismo patrón que ya pasó con `mkResult`/`mkNA` y
+    `MAX_RAW_SCORE`: cada capa revela una más. La transformación
+    sospechada (derivar `price` y el resto de indicadores a partir de
+    `candles`/`periods`) probablemente vive dentro de
+    `fetchNyseTicker()`/`fetchCryptoTicker()`, no en
+    `fetchAllNyse`/`fetchAllCrypto`.
+  - **Pregunta 8 confirmada (04/10/2026, `docs/pipeline/pregunta8_salida.txt`,
+    commit `add701f`) — HALLAZGO MAYOR, cambia el diagnóstico del todo:**
+    `fetchNyseTicker()` **no llama a `/api/scan-batch`** (el endpoint
+    que usa `snapshot_autocapture.py`) — llama a
+    `GET /api/scan-data?ticker=...&timeframes=1d,1h,15m`, un endpoint
+    **distinto**, por ticker individual. Trae `candles` en bruto y los
+    pasa a **`computeIndicators(candles, tf)`**, que es quien produce
+    `price`/`ema20/50/200`/`rsi`/`macdHist`/`rvol`/`gapPct`/`adx`/etc. —
+    TODO lo que los 10 `evalXX` esperan en `ind[tf]`.
+    `fetchCryptoTicker()` usa la misma `computeIndicators()` sobre velas
+    de `fetchBinanceKlines()`. `fetchFundamentals`/`fetchInsiders`
+    tampoco usan los endpoints `*-batch` — llaman a
+    `GET /api/fundamentals?ticker=`/`GET /api/insiders?ticker=`
+    (singular). `sleep()` confirmado trivial, sin más llamadas — cerrado.
+    **`computeIndicators()` nunca se había identificado como
+    dependencia hasta ahora, y es casi con certeza la pieza más grande
+    de todo este diseño** (cálculo real de indicadores técnicos —
+    EMA/RSI/MACD/ADX/RVOL — no orquestación ni scoring). Esto significa
+    que el contrato de entrada de `POST /api/evaluate-ticker` (recibir
+    `ind` ya calculado) nunca tuvo una fuente server-side real: ni
+    `/api/scan-batch` ni nada en `snapshot_autocapture.py` calculan
+    estos campos — solo devuelven `candles`/`periods` en bruto.
+  - **Pregunta 9 confirmada (04/10/2026, `docs/pipeline/pregunta9_salida.txt`,
+    commit `409d7a7`):** `computeIndicators(candles, tf)` produce los 19
+    campos que necesitan los 10 `evalXX`/`tickerHardNo` — completitud
+    confirmada, nada sin cubrir. Pero delega en **9 funciones de
+    cálculo nunca extraídas**: `emaArr`, `calcRSI`, `calcMACD`,
+    `calcATR`, `calcRVOL`, `calcADX`, `calcCompression`, `calcGapPct`,
+    `calcVWAP` — la aritmética real de indicadores técnicos, con riesgo
+    de convención (Wilder vs. suavizado simple, semilla, ventana de
+    calentamiento) mucho mayor que cualquier gap anterior. Dato a
+    confirmar: `emaArr(closes,200,true)` pasa un 3er argumento que
+    `ema20`/`ema50` no pasan — qué hace, sin confirmar.
+    `fetchBinanceKlines()` confirmada sin hallazgos nuevos (crypto ya
+    excluido de esta automatización, prioridad baja).
+  - **Pregunta 10 confirmada (04/10/2026, `docs/pipeline/pregunta10_salida.txt`,
+    commit `62c5cb3`) — FONDO DE LA CADENA.** Las 9 funciones completas
+    (verificado programáticamente, balance de llaves), ninguna llama a
+    algo no confirmado (`calcMACD`→`emaArr`, ya una de las 9; `calcADX`
+    define su propio `wilder()` local, mostrado entero). **No hace falta
+    Pregunta 11 para el cálculo — se puede empezar a portar.** Detalle
+    completo (convención por función, qué devuelve cada una sin datos
+    suficientes) en el diseño §1.10. Dos hallazgos que cualquier puerto
+    debe reproducir tal cual, no "corregir": (a) con los `n` reales
+    (120/100/96, por debajo de 200 en los tres timeframes), `ema200`
+    **siempre** cae en el fallback de `emaArr` — es la media simple de
+    todos los cierres disponibles, nunca una EMA de 200 de verdad; (b)
+    hay **dos familias de suavizado**, EMA clásica (`emaArr`/`calcMACD`)
+    y Wilder (`calcRSI`/`calcATR`/`calcADX`) — reutilizar una función
+    para las dos da un número sutilmente distinto sin error, mismo
+    patrón que ya costó `risk_pct`/`risk_per_share` y `atrMax`.
+  - **Fixtures reales comitidos y puerto Python completo (04/10/2026,
+    commit `4225c02` de los fixtures):** `indicator_calc.py` — las 9
+    funciones + `compute_indicators()`, con las dos familias de
+    suavizado en implementaciones separadas y el fallback de `ema200`
+    tal cual. **103 pruebas pasan** (`test_indicator_calc.py`) contra
+    los 9 fixtures reales (AAPL/MSFT/NVDA × 1d/1h/15m, tolerancia
+    `1e-9`), más 4 pruebas deterministas que fallan si alguien
+    "corrige" el fallback de `ema200`, intercambia Wilder por EMA
+    clásica, o agrupa `calc_vwap` por hora local.
+  - **Conectado con `evaluate_ticker_logic.py`:** `build_ind(data)` —
+    el puente entre `candles`/`periods` en bruto y el `ind` que
+    `evaluate_ticker()` siempre esperó. **9 pruebas de integración**
+    (`test_integration_build_ind.py`) corren la cadena completa
+    (`build_ind` → `evaluate_ticker` → `detect_auto_trigger`) sobre los
+    3 fixtures reales sin excepciones. Total de la suite:
+    **122 pruebas, todas pasan**.
+  - **Contrato decidido (05/10/2026, del usuario): `candles` en bruto.**
+    `POST /api/evaluate-ticker` recibe el `data` tal cual de
+    `scan_batch()` y calcula `ind` con `build_ind()` — único camino de
+    cálculo. `ind` ya calculado sigue como alternativa explícita,
+    mutuamente excluyente (422 si llegan los dos o ninguno).
+    `evaluate_ticker_endpoint.py` rediseñado para ser importable y
+    testeable sin `NameError` — problema distinto del `NameError` real
+    de producción (que fue `Optional` sin importar en
+    `market_data_proxy.py`, ver más abajo): este era `@app.post(...)`
+    como decorador de módulo con `app` sin definir en el repo, sin
+    relación con el incidente real. **Hallazgo al probarlo, no al
+    suponerlo: NaN no es JSON
+    válido en ninguna dirección** — Starlette usa `allow_nan=False` y
+    lanza `ValueError` al servir NaN (confirmado con fastapi 0.141.1
+    real, no supuesto); lo mismo al recibirlo. Resuelto con
+    `nan_to_json_sentinel()`/`sentinel_to_nan()` (string `"NaN"`
+    explícito, única implementación compartida por endpoint,
+    `snapshot_autocapture.py` y pruebas). `snapshot_autocapture.py`
+    actualizado para enviar `candles` (ya no `ind` con el `data` crudo
+    mal etiquetado — ese era el bug real detrás del primer `KeyError`).
+    **131 pruebas en total, todas pasan** (9 nuevas contra una app
+    FastAPI real con `TestClient`, confirmando candles≡ind-ya-calculado,
+    los 422, y el NaN sobreviviendo el round-trip HTTP).
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` actualizada al contrato
+    nuevo (Paso B envía `candles`; Paso C calcula `ind` con el propio
+    `computeIndicators()` del navegador antes de llamar a
+    `evaluateTicker()`, con un replacer para que su NaN se compare con
+    el `"NaN"` del endpoint y no con el `null` que da
+    `JSON.stringify(NaN)` por defecto en JS).
+  - **`docs/pipeline/deploy_evaluate_endpoint.sh` (05/10/2026):**
+    aplica el patch de forma idempotente (preflight de imports/módulos,
+    backup+sha256, reemplazo del bloque sin duplicar la ruta, imports
+    de cabecera verificados, restart con rollback automático, prueba
+    de humo con AAPL real) — reemplaza los pasos manuales de antes.
+    Probado contra una app FastAPI real: instalación desde cero,
+    reemplazo de un bloque viejo roto (simulando el incidente real del
+    `NameError` de `Optional`), dos ejecuciones idempotentes seguidas,
+    y el rollback forzado deliberadamente (restaura el backup exacto).
+  - **Primer intento real abortó correctamente, sin cambios — por un
+    motivo real no cubierto por la fixture sintética.** El marcador
+    `# ─── Learning Engine` a secas aparece 2 veces en el proxy real
+    (Postgres y `signal_snapshots endpoints`, dos secciones legítimas).
+    Corregido al texto completo `# ─── Learning Engine: signal_snapshots
+    endpoints`, re-probado contra una fixture con la estructura exacta
+    reportada (dos cabeceras + `EvaluateTickerRequest` en su posición
+    real) — ignora la de Postgres, reemplaza bien el bloque sin tocar
+    `SnapshotCreateRequest`, y aborta sin cambios si el marcador de
+    cierre se duplica o si el de inicio queda después del de cierre.
+  - **Sin desplegar nada** (instrucción explícita del usuario). Queda
+    pendiente, antes de cerrar el paso 3: (a) ejecutar
+    `docs/pipeline/deploy_evaluate_endpoint.sh` contra el servidor real
+    (Paso 1b del README); (b) ejecutar
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` contra el servidor real.
+  - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
+    de `results[0]`.** `main()` ya empareja cada resultado de
+    `/api/scan-batch` por `item.get("ticker")` contra
+    `universo_por_ticker` (dict por ticker), no por índice — confirmado
+    leyendo el código, sin cambios necesarios. Se corrigió además el
+    único `results[0]` que quedaba, en el ejemplo de un solo ticker de
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`, por consistencia (no era un
+    bug ahí — una sola petición no tiene ambigüedad de orden — pero
+    conviene que todo el repo use el mismo criterio de "emparejar por
+    ticker, nunca por posición").
+- **Sigue sin resolver, fuera del alcance de este paso:** de dónde salen
+  `entry_price`/`stop_price`/`risk_per_share` (no están en el shape de
+  `evaluate_ticker_logic.evaluate_ticker()`).
+- **Para cerrarlo:** (1)-(2) hechos (hoja real + `cargar_universo_de_tickers()`);
+  (3) ~~aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py`
+  real~~ hecho, pero la verificación reveló un gap de arquitectura, no
+  solo de datos: falta portar `computeIndicators()` (o cambiar el
+  contrato del endpoint para que reciba `candles` en bruto y calcule
+  los indicadores él mismo, server-side — a decidir una vez se vea su
+  cuerpo real) antes de poder confiar en el resultado; ejecutar la
+  Pregunta 9, confirmar el cálculo exacto, y portarlo antes de volver a
+  intentar la verificación; (4) repetir
+  `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con datos reales hasta que
+  coincida, y comitir el resultado — obligatorio antes de cerrar esto;
+  (5) resolver el origen de `entry_price`/`stop_price`/`risk_per_share`;
+  (6) aplicar el bind a `127.0.0.1`;
+  (7) desplegar y verificar siguiendo el protocolo del README
+  (`--dry-run`, luego una corrida real con ZZTEST fuera de la franja de
+  los timers del evaluador) antes de habilitar el timer.
+- **Estado (05-06/10/2026) — NYSE verificado con un oráculo Node, ruta
+  CRIPTO portada y probada offline, pendiente de verificar en servidor:**
+  - **NYSE: `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` sustituida por un
+    oráculo Node** (`docs/pipeline/generar_oraculo_evaluate_js.sh` +
+    `test_oraculo_vs_endpoint.py`) — nadie había abierto nunca `/scanner`
+    contra el servidor real, y el bind a 127.0.0.1 (punto 6 de este
+    backlog... ver entrada 2) lo deja inalcanzable en cuanto se aplique.
+    Ejecutado contra los 17 tickers reales de `14_UNIVERSO_TICKERS`
+    (`docs/pipeline/fixtures_js/oraculo_evaluate/`) — reveló un bug real:
+    `mk_result()` normalizaba con `round()` de Python (round-half-to-even)
+    en vez de replicar `Math.round()` de JS (siempre hacia +Infinity) —
+    MU/ST-09 daba 62 vs. 63 real, aislado a `raw=50/maxRaw=80 ->
+    50/80*100=62.5` exacto. Corregido con un helper único `js_round()`
+    en `evaluate_ticker_logic.py`, con pruebas de regresión contra las
+    velas reales de MU. Los 17 tickers pasan con el fix.
+  - **CRIPTO (06/10/2026): puerto + pruebas offline listos, verificación
+    contra servidor real PENDIENTE de ejecutar.** `evalSC01`/`evalSC02`/
+    `evalSCPB` ya estaban portados; ahora con pruebas dedicadas
+    (`test_evaluate_ticker_logic_cripto.py`) incluido el caso
+    `btcGateOn=false` (ningún altcoin puede sacar señal de ninguna de
+    las 3 estrategias). `snapshot_autocapture.py` tiene rama `--market
+    crypto` nueva: 24/7 (sin la ventana 16:00-18:00, que sigue siendo
+    solo NYSE), velas directas de Binance (`fetch_binance_klines()`,
+    puerto literal de `fetchBinanceKlines()`), `cargar_universo_cripto()`
+    (solo `MERCADO=CRYPTO`+`ESTADO=ACTIVO`). Probado con mocks, sin red
+    (`test_snapshot_autocapture_cripto.py`).
+    **Dos bloqueos reales, no de datos:** `computeMarketContext()` (el
+    gate BTC real) y el valor de `BINANCE_BASE` nunca se han extraído del
+    navegador — detalle y plan de resolución en `docs/pipeline/BLOQUEOS.md`
+    (Pregunta 11, ya añadida a `check_autocapture_triggers.sh`). Mientras
+    tanto, `compute_btc_gate()` fuerza el gate a OFF (mismo fallback que
+    ya tiene el código real cuando falta el contexto de mercado) —
+    SC-02/SC-PB no pueden disparar una señal hasta que se resuelva.
+    `docs/pipeline/verificar_cripto.sh` (un solo comando: pull, extrae,
+    pide velas reales de Binance para BTC/ETH/SOL, compara JS-vs-Python,
+    comitea el resultado) está escrito y probado end-to-end en sandbox
+    (fixture sintético + Binance simulado) pero **nunca se ha ejecutado
+    contra el servidor real** — primer paso de
+    `docs/pipeline/RUNBOOK_CRIPTO.md`. **BTC/ETH/SOL siguen con
+    `ESTADO` distinto de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito**
+    (instrucción explícita del usuario) hasta que esa verificación pase
+    — no se ha tocado la hoja ni se ha creado ningún timer cripto.
+  - **Estado (07/10/2026): Pregunta 11 pegada (`pregunta11_salida.txt`)
+    — `computeMarketContext()`/`BINANCE_BASE` confirmados y PORTADOS DE
+    VERDAD.** `gateOn = BTC.price > BTC.ema50` (1D) — confirma
+    literalmente la regla del proyecto ("BTC < EMA50 diaria = cero
+    longs"). `compute_btc_gate()` ya no es un sustituto que fuerza
+    `False` — calcula el valor real. `BINANCE_BASE` real:
+    `https://data-api.binance.vision` (NO `api.binance.com`, corregido).
+  - **Bug real encontrado al validar esto: el "3/3 PASA, Gate BTC OFF
+    (real)" reportado antes era, en parte, un FALSO POSITIVO.**
+    `verificar_cripto.sh` extraía `computeMarketContext()` sola, sin sus
+    4 dependencias (`fetchCryptoTicker`/`fetchBinanceKlines`/`sleep`/
+    `BINANCE_BASE`) — `computeMarketContext()` lanzaba internamente
+    `ReferenceError: fetchCryptoTicker is not defined`, silenciado por su
+    propio `catch(e){return null}` real, indistinguible desde fuera de
+    un `gateOn:false` genuino. Corregido extrayendo las 5 piezas juntas;
+    probado con un mock de Binance que `computeMarketContext()` ya
+    ejecuta de verdad sin reventar. El puerto Python, corrido contra las
+    velas de BTC que ese mismo run comiteó, da `price > ema50` ->
+    **gate ON** — lo contrario del "OFF" reportado con el bug. **Hace
+    falta re-ejecutar `docs/pipeline/verificar_cripto.sh` (ya corregido)
+    contra el servidor real para tener un valor de gate fiable** —
+    detalle completo en `docs/pipeline/BLOQUEOS.md`, bloqueo 1.
+  - **Desviación consciente añadida (07/10/2026, instrucción explícita
+    del usuario):** el gate BTC se aplica en la CAPA DE CAPTURA
+    (`_evaluar_y_capturar()`) a TODOS los longs cripto, **incluido
+    SC-01** — aunque `evalSC01()` (el JS real, confirmado literal) no
+    comprueba `btcGateOn` en absoluto (a diferencia de SC-02/SC-PB, que
+    sí la tienen incorporada vía `mkNA()`). Regla del proyecto: BTC por
+    debajo de su EMA50 diaria = cero longs cripto, sin excepción — la
+    captura automática es deliberadamente MÁS ESTRICTA que lo que
+    enseña el scanner. No toca `evaluate_ticker_logic.py` (sigue siendo
+    un puerto fiel del JS, para que `verificar_cripto.sh` siga
+    comparando lo mismo que el navegador) — el bloqueo vive solo en
+    `snapshot_autocapture.py`. Probado:
+    `test_evaluar_y_capturar_bloquea_sc01_con_gate_off`/
+    `_permite_sc01_con_gate_on`/`_gate_off_no_bloquea_nyse`.
+  - **`verificar_cripto.sh` ampliado con una pasada de gate forzado a
+    ON** (`FORCE_BTC_GATE_ON=1`) — ejecuta una segunda comparación
+    JS-vs-Python con las MISMAS velas reales pero `btcGateOn=true` en
+    los dos lados, para ejercitar las ramas de scoring de SC-02/SC-PB
+    que con el gate real OFF nunca se prueban. Es un test de
+    equivalencia de lógica, no de mercado — el informe dice
+    explícitamente qué ramas quedaron cubiertas.
+
+### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
+
+- **Descripción:** al cerrar la entrada 5, `evaluateTicker()` +
+  `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`/`applyEventAdjustments`/
+  `tickerHardNo` pasan a vivir también (portadas) en
+  `POST /api/evaluate-ticker` dentro de `market_data_proxy.py`. El
+  navegador (`/opt/axonik/scanner/index.html`) sigue calculando con su
+  propia copia local — deliberadamente, no se toca en esa tarea. Mientras
+  existan dos copias, pueden divergir si alguien edita una sin la otra.
+- **Hallazgo original:** decisión de arquitectura del 04/10/2026 en la
+  entrada 5 de este backlog.
+- **Estado:** DEUDA ACEPTADA, no urgente — las dos copias parten del mismo
+  texto fuente recién verificado (entrada 5), así que el riesgo de
+  divergencia es bajo mientras no se edite ninguna de las dos.
+- **Para cerrarlo:** una vez que `POST /api/evaluate-ticker` lleve tiempo
+  estable en uso automático (criterio a definir — p.ej. unas semanas sin
+  incidencias), migrar `evaluateTicker()` del navegador a llamar a ese
+  mismo endpoint en vez de calcular localmente, y retirar la copia JS.
+
+### 7. [MEDIA] `ST-04` no está en `NYSE_STRATEGIES` — no se evalúa en ningún escaneo
+
+- **Descripción:** la auditoría Fase 0A certificó una operación real con
+  `ST-04` (GOOGL, el único WIN de esa estrategia). Sin embargo, el array
+  real `NYSE_STRATEGIES` del navegador (confirmado por texto literal en
+  la Pregunta 5/5b, ver entrada 5 de este backlog) no incluye `ST-04` —
+  solo contiene `ST-01, ST-05, ST-06, ST-09, ST-11, ST-15, ST-16`. Como
+  `evaluateTicker()` recorre ese array fijo por `mode`, `ST-04` no se
+  evalúa hoy en ningún escaneo, ni manual (navegador) ni automático
+  (futuro `POST /api/evaluate-ticker`, que porta el mismo array). Es
+  independiente de la tarea de automatización: el hallazgo es que una
+  estrategia con un WIN certificado quedó fuera del escaneo activo, no un
+  problema de cómo se automatiza.
+- **Hallazgo original:** cruce entre la auditoría Fase 0A (operación
+  GOOGL/ST-04) y la extracción literal de `NYSE_STRATEGIES` en
+  `docs/pipeline/2026-10-03_automatizacion_captura_snapshots.md` §1.7
+  (entrada 5 de este backlog).
+- **Estado:** INFORME, sin decisión. No se ha confirmado si `ST-04`
+  tiene también entrada en `STRATEGY_META`/`MAX_RAW_SCORE` como las
+  demás (pendiente de revisar si hace falta para la decisión) ni por qué
+  se excluyó de `NYSE_STRATEGIES` en su momento.
+- **Para cerrarlo:** decidir si `ST-04` se reincorpora a
+  `NYSE_STRATEGIES` (y a partir de ahí se evalúa igual que las otras 7) o
+  se retira formalmente como estrategia (documentando que su único WIN
+  queda como histórico, sin escaneo futuro). Fuera del alcance de la
+  tarea de automatización de la entrada 5 — no bloquea su cierre.
 
 ## Cerrados
 

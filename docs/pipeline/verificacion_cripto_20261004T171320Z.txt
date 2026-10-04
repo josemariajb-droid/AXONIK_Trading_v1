@@ -1,0 +1,27 @@
+=== 1. git pull (2026-10-04T17:13:20Z) ===
+Already up to date.
+=== 2. Extrayendo las 32 piezas comunes + computeMarketContext (opcional) ===
+OK: /root/AXONIK_Trading_v1/docs/pipeline/fixtures_js/oraculo_cripto/oraculo_cripto_extracted.js parsea como JS válido (32/32 piezas obligatorias).
+OK: computeMarketContext() encontrado y parsea -- se intentará ejecutar de verdad.
+=== 3. Velas reales de Binance (BTC/ETH/SOL) ===
+  BTC: velas 1d/1h/15m guardadas en /root/AXONIK_Trading_v1/docs/pipeline/fixtures_js/oraculo_cripto
+  ETH: velas 1d/1h/15m guardadas en /root/AXONIK_Trading_v1/docs/pipeline/fixtures_js/oraculo_cripto
+  SOL: velas 1d/1h/15m guardadas en /root/AXONIK_Trading_v1/docs/pipeline/fixtures_js/oraculo_cripto
+=== 4. Ejecutando Node real (evaluateTicker CRYPTO + detectAutoTrigger + gate BTC) ===
+Node: escritos _gate.json + <TICKER>_evaluate_output.json/_trigger_output.json
+Gate BTC: OFF (real)
+=== 5. Comparando contra evaluate_ticker_logic.py (tolerancia 1e-9) ===
+--- BTC ---
+  PASA
+--- ETH ---
+  PASA
+--- SOL ---
+  PASA
+=== INFORME CORTO ===
+Gate BTC: OFF (real)
+BTC: PASA
+ETH: PASA
+SOL: PASA
+Resultado global: 3/3 PASA
+Salida completa: /root/AXONIK_Trading_v1/docs/pipeline/verificacion_cripto_20261004T171320Z.txt
+Fixtures: /root/AXONIK_Trading_v1/docs/pipeline/fixtures_js/oraculo_cripto
