@@ -121,6 +121,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -149,8 +150,37 @@ OPERATING_WINDOW = (16, 18)  # [16:00, 18:00) Europe/Madrid
 OPERATING_WEEKDAYS = {0, 1, 2, 3, 4}  # datetime.weekday(): lunes=0 ... viernes=4
 # Cripto excluido por ahora, a propósito: la ventana 16:00-18:00 Madrid está
 # atada a la apertura de NYSE, no a cripto (24/7). Decisión aparte si se quiere
-# ampliar, no asumida aquí.
+# ampliar, no asumida aquí. Usado solo por cargar_universo_de_tickers() (rama
+# NYSE) -- la rama CRYPTO usa cargar_universo_cripto(), que hace lo inverso
+# (solo MERCADO=CRYPTO), ver más abajo.
 EXCLUDED_MARKETS = {"CRYPTO"}
+
+# --- Rama CRIPTO (06/10/2026) ------------------------------------------------
+#
+# BTC/ETH/SOL siguen con ESTADO!=ACTIVO en 14_UNIVERSO_TICKERS a propósito
+# (instrucción explícita del usuario) hasta que
+# docs/pipeline/verificar_cripto.sh pase contra el servidor real --
+# cargar_universo_cripto() ya los filtraría igual que a cualquier otro
+# ticker inactivo, así que no hace falta ningún guard adicional aquí: el
+# guard real vive en la hoja, no en este código.
+#
+# BINANCE_BASE: SIN CONFIRMAR contra el texto literal de
+# fetchBinanceKlines() -- solo se ha visto el NOMBRE de la constante
+# dentro de la URL interpolada (Pregunta 9), nunca su valor real (Pregunta
+# 11 de check_autocapture_triggers.sh, pendiente de ejecutar en el
+# servidor -- ver docs/pipeline/BLOQUEOS.md). Se usa el dominio público
+# estándar de Binance como valor por defecto, documentado como SUPUESTO
+# no confirmado -- overridable sin tocar código vía
+# AXONIK_BINANCE_BASE si resulta ser distinto (p.ej. un proxy propio).
+BINANCE_BASE = os.environ.get("AXONIK_BINANCE_BASE", "https://api.binance.com")
+# Límites de velas por timeframe: CONFIRMADOS contra fetchCryptoTicker()
+# (Pregunta 9/10) -- 120/100/96, distintos de los de NYSE (que no fija un
+# "limit" explícito, scan-batch decide cuántas velas devuelve).
+BINANCE_KLINE_LIMITS = {"1d": 120, "1h": 100, "15m": 96}
+# fetchBinanceKlines(symbol, interval, limit, retries): retries==null?2:retries
+# -- 2 reintentos (3 intentos en total), 800ms entre cada uno. Literal.
+BINANCE_RETRIES = 2
+BINANCE_RETRY_SLEEP_SECONDS = 0.8
 
 # CONFIRMADO (Pregunta 6d, docs/pipeline/pregunta6_salida.txt línea 1026):
 # DEFAULT_SETTINGS real del navegador es {capital:10000, riskPct:0.5,
@@ -204,23 +234,28 @@ def within_operating_window(now_madrid: datetime) -> bool:
     return start_hour <= now_madrid.hour < end_hour
 
 
-def cargar_universo_de_tickers() -> list[TickerUniverseEntry]:
-    """
-    Diseño §1.9: hoja 14_UNIVERSO_TICKERS, filtrando ESTADO='ACTIVO', vía
-    gspread (misma librería y credenciales que ya usa snapshot_evaluator.py)
-    — no localStorage de ningún navegador, no 02_SCANNERS.
-    Excluye además los de mercado CRYPTO (ver EXCLUDED_MARKETS).
-    """
+def _leer_filas_universo() -> list[dict]:
+    """Conexión + lectura en bruto de 14_UNIVERSO_TICKERS, compartida por
+    cargar_universo_de_tickers() (NYSE) y cargar_universo_cripto()."""
     if not DECISION_ENGINE_SHEET_ID:
         raise RuntimeError("Falta AXONIK_DECISION_ENGINE_SHEET_ID en el entorno.")
 
     gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
     sh = gc.open_by_key(DECISION_ENGINE_SHEET_ID)
     ws = sh.worksheet(UNIVERSE_WORKSHEET)
-    rows = ws.get_all_records()
+    return ws.get_all_records()
 
+
+def cargar_universo_de_tickers() -> list[TickerUniverseEntry]:
+    """
+    Diseño §1.9: hoja 14_UNIVERSO_TICKERS, filtrando ESTADO='ACTIVO', vía
+    gspread (misma librería y credenciales que ya usa snapshot_evaluator.py)
+    — no localStorage de ningún navegador, no 02_SCANNERS.
+    Excluye además los de mercado CRYPTO (ver EXCLUDED_MARKETS) -- rama
+    NYSE, gated por la ventana operativa 16:00-18:00 Madrid.
+    """
     universo = []
-    for row in rows:
+    for row in _leer_filas_universo():
         estado = str(row.get("ESTADO") or "").strip().upper()
         mercado = str(row.get("MERCADO") or "").strip().upper()
         ticker = str(row.get("TICKER") or "").strip()
@@ -228,6 +263,36 @@ def cargar_universo_de_tickers() -> list[TickerUniverseEntry]:
             continue
         if mercado in EXCLUDED_MARKETS:
             log.info(f"ticker {ticker} excluido de esta ventana: mercado={mercado}")
+            continue
+        universo.append(TickerUniverseEntry(
+            ticker=ticker,
+            mercado=mercado,
+            estado=estado,
+            fecha_alta=str(row.get("FECHA_ALTA", "")),
+            notas=str(row.get("NOTAS", "")),
+        ))
+    return universo
+
+
+def cargar_universo_cripto() -> list[TickerUniverseEntry]:
+    """
+    Igual que cargar_universo_de_tickers() pero al revés: solo
+    MERCADO='CRYPTO' con ESTADO='ACTIVO' -- rama 24/7, sin ventana
+    operativa (BTC/ETH/SOL cotizan todo el día, no solo en horario NYSE).
+
+    BTC/ETH/SOL siguen con ESTADO!=ACTIVO en la hoja real a propósito
+    (instrucción explícita del usuario, 06/10/2026) hasta que
+    docs/pipeline/verificar_cripto.sh pase -- esta función ya los
+    excluirá igual que a cualquier ticker inactivo, sin ningún guard
+    adicional en código. No es responsabilidad de este script decidir
+    cuándo activarlos; solo lee lo que diga la hoja.
+    """
+    universo = []
+    for row in _leer_filas_universo():
+        estado = str(row.get("ESTADO") or "").strip().upper()
+        mercado = str(row.get("MERCADO") or "").strip().upper()
+        ticker = str(row.get("TICKER") or "").strip()
+        if not ticker or estado not in ACTIVE_STATES or mercado != "CRYPTO":
             continue
         universo.append(TickerUniverseEntry(
             ticker=ticker,
@@ -258,7 +323,90 @@ def fetch_scan_batch(universo: list[TickerUniverseEntry]) -> dict:
     return resp.json()
 
 
-def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
+def fetch_binance_klines(symbol: str, interval: str, limit: int) -> list[dict]:
+    """
+    Pieza: fetchBinanceKlines() (línea 1338 del navegador, Pregunta 9) --
+    puerto literal, no una reimplementación con otra forma de pedir velas.
+    GET {BINANCE_BASE}/api/v3/klines?symbol=...&interval=...&limit=...;
+    reintentos: retries==null?2:retries -- 2 reintentos (3 intentos en
+    total), 800ms entre cada uno (BINANCE_RETRIES/BINANCE_RETRY_SLEEP_SECONDS).
+    Mapea cada vela [t_ms,o,h,l,c,v,...] de Binance a {t:floor(t_ms/1000),
+    o,h,l,c,v} -- mismo shape que usa indicator_calc.compute_indicators()
+    para NYSE, sin bifurcar el cálculo por mercado.
+
+    BINANCE_BASE sigue sin confirmar contra el texto literal (ver
+    docs/pipeline/BLOQUEOS.md) -- usa el dominio público estándar de
+    Binance como valor por defecto, documentado como supuesto.
+    """
+    last_err: Exception | None = None
+    for attempt in range(BINANCE_RETRIES + 1):
+        try:
+            resp = requests.get(
+                f"{BINANCE_BASE}/api/v3/klines",
+                params={"symbol": symbol, "interval": interval, "limit": limit},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+            return [
+                {"t": int(k[0] // 1000), "o": float(k[1]), "h": float(k[2]),
+                 "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
+                for k in raw
+            ]
+        except Exception as exc:  # noqa: BLE001 -- igual que el catch(e) real, reintenta cualquier fallo
+            last_err = exc
+            if attempt < BINANCE_RETRIES:
+                time.sleep(BINANCE_RETRY_SLEEP_SECONDS)
+    raise last_err  # type: ignore[misc]
+
+
+def fetch_crypto_candles(ticker: str) -> dict:
+    """
+    Pieza: fetchCryptoTicker() (línea 1356, Pregunta 9) -- símbolo
+    `{ticker}USDT`, 1d/1h/15m con los límites confirmados
+    (BINANCE_KLINE_LIMITS: 120/100/96). A diferencia del navegador (que
+    llama a computeIndicators() aquí mismo), esta función solo devuelve
+    las velas en bruto con el mismo shape que "data" de scan_batch()
+    ({"1d":{"candles":[...],"periods":N}, ...}) -- el cálculo de "ind"
+    sigue pasando siempre por build_ind()/evaluate_ticker_endpoint.py del
+    lado servidor (single source of truth, misma decisión de arquitectura
+    que la rama NYSE, no una segunda ruta de cálculo para cripto).
+    """
+    symbol = f"{ticker}USDT"
+    data = {}
+    for tf, limit in BINANCE_KLINE_LIMITS.items():
+        candles = fetch_binance_klines(symbol, tf, limit)
+        data[tf] = {"candles": candles, "periods": len(candles)}
+    return data
+
+
+def compute_btc_gate() -> bool:
+    """
+    SUSTITUTO TEMPORAL de computeMarketContext() (línea sin confirmar --
+    Pregunta 11 de check_autocapture_triggers.sh, pendiente de ejecutar
+    contra el servidor real, ver docs/pipeline/BLOQUEOS.md). Solo se ha
+    confirmado la llamada en runScan(), nunca el cuerpo de
+    computeMarketContext() ni de dónde sale `.gateOn` -- no se adivina esa
+    aritmética aquí.
+
+    Devuelve False (gate OFF) siempre, a propósito: es EXACTAMENTE el
+    mismo valor que ya da el navegador cuando `state.marketContext` sale
+    falsy (`mode==='CRYPTO' ? (state.marketContext ? state.marketContext.gateOn : false) : null`,
+    confirmado literal) -- no una aproximación nueva, la misma rama de
+    "sin contexto de mercado -> gate OFF" que el código real ya tiene.
+    Con el gate OFF, evalSC02/evalSCPB (evaluate_ticker_logic.eval_sc02/
+    eval_scpb) devuelven mkNA() -- ninguna señal long de esas dos puede
+    salir mientras esto no se sustituya por el cálculo real.
+    """
+    log.warning(
+        "compute_btc_gate(): computeMarketContext() real no está portado "
+        "(ver docs/pipeline/BLOQUEOS.md) -- gate BTC forzado a OFF (False), "
+        "igual que el navegador cuando state.marketContext es falsy."
+    )
+    return False
+
+
+def evaluate_ticker(ticker: str, data: dict, mercado: str, btc_gate_on: bool = False) -> dict:
     """
     Llama a POST /api/evaluate-ticker (decisión de arquitectura
     04/10/2026, actualizada 05/10/2026: el endpoint recibe `candles` en
@@ -276,10 +424,16 @@ def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
     porta aquí /api/fundamentals-batch ni una fuente de insider score,
     fuera del alcance de este paso — con funda=None, ST-11 sale N/A y
     ST-01 pierde sus 2 puntos de bonus de fundamentales, nada más
-    (evaluate_ticker_logic ya lo maneja sin fallar). `btc_gate_on=False`
-    es irrelevante hoy: CRYPTO está excluido de esta ventana
-    (EXCLUDED_MARKETS), así que solo se evalúan tickers NYSE, donde ese
-    flag no se usa.
+    (evaluate_ticker_logic ya lo maneja sin fallar).
+
+    `btc_gate_on` (06/10/2026): antes hardcodeado a False porque CRYPTO
+    estaba excluido de toda ejecución (EXCLUDED_MARKETS) y el flag nunca
+    se usaba. Con la rama cripto (main(), --market crypto) sí se usa de
+    verdad -- viene de compute_btc_gate() (sustituto temporal de
+    computeMarketContext(), ver docs/pipeline/BLOQUEOS.md). La rama NYSE
+    sigue llamando a esto con btc_gate_on=False explícito (mode='NYSE'
+    nunca lo consulta, pero se pasa a propósito en vez de dejarlo
+    implícito en el default).
     """
     resp = requests.post(
         f"{PROXY_BASE}/api/evaluate-ticker",
@@ -289,7 +443,7 @@ def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
             "candles": data,
             "funda": None,
             "settings": SETTINGS,
-            "btc_gate_on": False,
+            "btc_gate_on": btc_gate_on,
             "insider_summary": None,
         },
         timeout=15,
@@ -349,17 +503,36 @@ def capture_signal(payload: dict, dry_run: bool) -> bool:
     return created
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dry-run", action="store_true",
-                         help="No hace ningún POST real — solo registra qué habría enviado.")
-    parser.add_argument("--force-window", action="store_true",
-                         help="Ignora el guard de ventana operativa. Solo para pruebas manuales "
-                              "deliberadas — nunca activarlo en el timer de systemd.")
-    args = parser.parse_args()
+def _evaluar_y_capturar(ticker: str, data: dict, mercado: str, btc_gate_on: bool,
+                         data_ts: str, snapshot_ts: str, dry_run: bool) -> bool:
+    """
+    Núcleo compartido por la rama NYSE y la rama CRYPTO de main(): evalúa
+    un ticker ya con sus velas en mano, detecta el trigger y captura si
+    corresponde. Devuelve True si se capturó una señal nueva (no
+    duplicada). No atrapa la excepción de evaluate_ticker() -- debe fallar
+    ruidoso y parar la corrida, no silenciarse ticker a ticker.
+    """
+    evaluation = evaluate_ticker(ticker, data, mercado, btc_gate_on=btc_gate_on)
 
-    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    trigger = etl.detect_auto_trigger(evaluation)
+    if not trigger:
+        return False
+
+    payload = construir_payload_snapshot(
+        ticker, evaluation, trigger, market=mercado,
+        data_ts=data_ts, snapshot_ts=snapshot_ts,
+    )
+    try:
+        return capture_signal(payload, dry_run=dry_run)
+    except Exception:
+        log.exception(f"Fallo al capturar {ticker} / {trigger['type']} — se sigue con el resto del lote.")
+        return False
+
+
+def _ejecutar_nyse(args: argparse.Namespace, now: datetime) -> int:
+    """Rama NYSE: gated por la ventana operativa 16:00-18:00 Madrid L-V,
+    velas vía /api/scan-batch, btc_gate_on=False explícito (mode='NYSE'
+    nunca lo consulta)."""
     if not within_operating_window(now) and not args.force_window:
         log.info(f"Fuera de la ventana operativa 16:00-18:00 Madrid L-V "
                  f"(ahora: {now.isoformat()}). No se captura nada.")
@@ -374,7 +547,7 @@ def main() -> int:
         log.exception("No se pudo cargar el universo de tickers desde 14_UNIVERSO_TICKERS.")
         return 1
 
-    log.info(f"Universo de tickers activos (no-crypto): {[u.ticker for u in universo]}")
+    log.info(f"Universo de tickers activos (NYSE): {[u.ticker for u in universo]}")
     if not universo:
         log.warning("Universo de tickers vacío — revisar 14_UNIVERSO_TICKERS antes de seguir.")
         return 0
@@ -402,29 +575,81 @@ def main() -> int:
             continue
 
         data = item.get("data") or {}
-        # evaluate_ticker() llama a POST /api/evaluate-ticker, que todavía
-        # no existe en el servidor real (ver cabecera del archivo) -- esto
-        # lanza un error de requests (404/conexión) a propósito. No se
-        # captura aquí: debe fallar ruidoso y parar la corrida, no
-        # silenciarse ticker a ticker ni fingir que no pasó nada.
-        evaluation = evaluate_ticker(ticker, data, entry.mercado)
+        if _evaluar_y_capturar(ticker, data, entry.mercado, btc_gate_on=False,
+                                data_ts=item.get("timestamp"), snapshot_ts=snapshot_ts,
+                                dry_run=args.dry_run):
+            capturas += 1
 
-        trigger = etl.detect_auto_trigger(evaluation)
-        if not trigger:
+    log.info(f"Fin de la corrida NYSE. Señales capturadas: {capturas}.")
+    return 0
+
+
+def _ejecutar_cripto(args: argparse.Namespace, now: datetime) -> int:
+    """
+    Rama CRYPTO: 24/7, SIN ventana operativa (BTC/ETH/SOL cotizan todo el
+    día -- la ventana 16:00-18:00 Madrid está atada a NYSE, no a esto,
+    --force-window no aplica ni se consulta aquí). Velas vía Binance
+    directo (fetch_crypto_candles(), no /api/scan-batch -- esa ruta es
+    NYSE-only, confirmado: fetchCryptoTicker() del navegador nunca llama a
+    scan-batch, pide Binance directo). Gate BTC real vía compute_btc_gate()
+    -- hoy un sustituto que siempre da False (ver su docstring y
+    docs/pipeline/BLOQUEOS.md) hasta que computeMarketContext() se porte.
+    """
+    try:
+        universo = cargar_universo_cripto()
+    except Exception:
+        log.exception("No se pudo cargar el universo cripto desde 14_UNIVERSO_TICKERS.")
+        return 1
+
+    log.info(f"Universo de tickers activos (CRYPTO): {[u.ticker for u in universo]}")
+    if not universo:
+        log.warning("Universo cripto vacío — BTC/ETH/SOL siguen sin ESTADO=ACTIVO en "
+                    "14_UNIVERSO_TICKERS (esperado hasta que verificar_cripto.sh pase). "
+                    "No se captura nada.")
+        return 0
+
+    btc_gate_on = compute_btc_gate()
+    log.info(f"Gate BTC: {'ON' if btc_gate_on else 'OFF'}")
+
+    snapshot_ts = now.astimezone(ZoneInfo("UTC")).isoformat()
+    data_ts = now.astimezone(ZoneInfo("UTC")).isoformat()
+    capturas = 0
+
+    for entry in universo:
+        try:
+            data = fetch_crypto_candles(entry.ticker)
+        except Exception:
+            log.exception(f"Fallo al pedir velas de Binance para {entry.ticker} — se omite "
+                           f"(no es un fallo del resto del lote).")
             continue
 
-        payload = construir_payload_snapshot(
-            ticker, evaluation, trigger, market=entry.mercado,
-            data_ts=item.get("timestamp"), snapshot_ts=snapshot_ts,
-        )
-        try:
-            if capture_signal(payload, dry_run=args.dry_run):
-                capturas += 1
-        except Exception:
-            log.exception(f"Fallo al capturar {ticker} / {trigger['type']} — se sigue con el resto del lote.")
+        if _evaluar_y_capturar(entry.ticker, data, entry.mercado, btc_gate_on=btc_gate_on,
+                                data_ts=data_ts, snapshot_ts=snapshot_ts,
+                                dry_run=args.dry_run):
+            capturas += 1
 
-    log.info(f"Fin de la corrida. Señales capturadas: {capturas}.")
+    log.info(f"Fin de la corrida CRYPTO. Señales capturadas: {capturas}.")
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--market", choices=["nyse", "crypto"], default="nyse",
+                         help="Rama a ejecutar (default: nyse, mismo comportamiento que antes "
+                              "de añadir la rama cripto -- el timer NYSE existente no cambia).")
+    parser.add_argument("--dry-run", action="store_true",
+                         help="No hace ningún POST real — solo registra qué habría enviado.")
+    parser.add_argument("--force-window", action="store_true",
+                         help="Ignora el guard de ventana operativa. Solo para pruebas manuales "
+                              "deliberadas — nunca activarlo en el timer de systemd. Sin efecto "
+                              "en --market crypto (esa rama no tiene ventana).")
+    args = parser.parse_args()
+
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    if args.market == "crypto":
+        return _ejecutar_cripto(args, now)
+    return _ejecutar_nyse(args, now)
 
 
 if __name__ == "__main__":

@@ -415,6 +415,48 @@ Abreviatura usada: **DOC-IDEM** =
   (7) desplegar y verificar siguiendo el protocolo del README
   (`--dry-run`, luego una corrida real con ZZTEST fuera de la franja de
   los timers del evaluador) antes de habilitar el timer.
+- **Estado (05-06/10/2026) — NYSE verificado con un oráculo Node, ruta
+  CRIPTO portada y probada offline, pendiente de verificar en servidor:**
+  - **NYSE: `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` sustituida por un
+    oráculo Node** (`docs/pipeline/generar_oraculo_evaluate_js.sh` +
+    `test_oraculo_vs_endpoint.py`) — nadie había abierto nunca `/scanner`
+    contra el servidor real, y el bind a 127.0.0.1 (punto 6 de este
+    backlog... ver entrada 2) lo deja inalcanzable en cuanto se aplique.
+    Ejecutado contra los 17 tickers reales de `14_UNIVERSO_TICKERS`
+    (`docs/pipeline/fixtures_js/oraculo_evaluate/`) — reveló un bug real:
+    `mk_result()` normalizaba con `round()` de Python (round-half-to-even)
+    en vez de replicar `Math.round()` de JS (siempre hacia +Infinity) —
+    MU/ST-09 daba 62 vs. 63 real, aislado a `raw=50/maxRaw=80 ->
+    50/80*100=62.5` exacto. Corregido con un helper único `js_round()`
+    en `evaluate_ticker_logic.py`, con pruebas de regresión contra las
+    velas reales de MU. Los 17 tickers pasan con el fix.
+  - **CRIPTO (06/10/2026): puerto + pruebas offline listos, verificación
+    contra servidor real PENDIENTE de ejecutar.** `evalSC01`/`evalSC02`/
+    `evalSCPB` ya estaban portados; ahora con pruebas dedicadas
+    (`test_evaluate_ticker_logic_cripto.py`) incluido el caso
+    `btcGateOn=false` (ningún altcoin puede sacar señal de ninguna de
+    las 3 estrategias). `snapshot_autocapture.py` tiene rama `--market
+    crypto` nueva: 24/7 (sin la ventana 16:00-18:00, que sigue siendo
+    solo NYSE), velas directas de Binance (`fetch_binance_klines()`,
+    puerto literal de `fetchBinanceKlines()`), `cargar_universo_cripto()`
+    (solo `MERCADO=CRYPTO`+`ESTADO=ACTIVO`). Probado con mocks, sin red
+    (`test_snapshot_autocapture_cripto.py`).
+    **Dos bloqueos reales, no de datos:** `computeMarketContext()` (el
+    gate BTC real) y el valor de `BINANCE_BASE` nunca se han extraído del
+    navegador — detalle y plan de resolución en `docs/pipeline/BLOQUEOS.md`
+    (Pregunta 11, ya añadida a `check_autocapture_triggers.sh`). Mientras
+    tanto, `compute_btc_gate()` fuerza el gate a OFF (mismo fallback que
+    ya tiene el código real cuando falta el contexto de mercado) —
+    SC-02/SC-PB no pueden disparar una señal hasta que se resuelva.
+    `docs/pipeline/verificar_cripto.sh` (un solo comando: pull, extrae,
+    pide velas reales de Binance para BTC/ETH/SOL, compara JS-vs-Python,
+    comitea el resultado) está escrito y probado end-to-end en sandbox
+    (fixture sintético + Binance simulado) pero **nunca se ha ejecutado
+    contra el servidor real** — primer paso de
+    `docs/pipeline/RUNBOOK_CRIPTO.md`. **BTC/ETH/SOL siguen con
+    `ESTADO` distinto de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito**
+    (instrucción explícita del usuario) hasta que esa verificación pase
+    — no se ha tocado la hoja ni se ha creado ningún timer cripto.
 
 ### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
 

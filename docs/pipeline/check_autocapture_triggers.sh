@@ -464,7 +464,30 @@ for name in emaArr calcRSI calcMACD calcATR calcRVOL calcADX calcCompression cal
 done
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7, 8, 9 y 10 -- hasta"
-echo "    tener el cuerpo literal de las 9 funciones de cálculo (y confirmar si alguna"
-echo "    llama a algo más sin confirmar) no se porta nada ni se reintenta la"
-echo "    verificación navegador-vs-endpoint. ==="
+echo "=== Pregunta 11: computeMarketContext()/BINANCE_BASE -- gate BTC de la ruta CRIPTO, NUNCA extraído ==="
+echo "--- fetchAllCrypto/fetchCryptoTicker/fetchBinanceKlines/evalSC01/evalSC02/"
+echo "    evalSCPB ya están confirmados (Preguntas 7/8/9 y 5/5b/5c/5d/6).  pero"
+echo "    runScan() (línea 243, ya volcada) llama a"
+echo "    'state.marketContext = await computeMarketContext(mode)' y deriva"
+echo "    'btcGateOn = mode===CRYPTO ? (state.marketContext ? state.marketContext.gateOn : false) : null'"
+echo "    -- SOLO la llamada está confirmada, el CUERPO de computeMarketContext()"
+echo "    (de dónde sale .gateOn, qué umbral/indicador de BTC usa) nunca se ha"
+echo "    volcado. evalSC02/evalSCPB dependen de btcGateOn (mkNA si está OFF) pero"
+echo "    nunca evalúan ellas mismas si debería estar ON -- esa lógica vive solo"
+echo "    en computeMarketContext(). Tampoco se ha confirmado el valor real de"
+echo "    BINANCE_BASE (solo se ha visto el nombre dentro de la URL interpolada de"
+echo "    fetchBinanceKlines, Pregunta 9) -- necesario para que"
+echo "    verificar_cripto.sh pida las mismas velas de Binance que pediría el"
+echo "    navegador real, no una URL adivinada. ---"
+print_js_def "$SCANNER_HTML" "computeMarketContext" 300
+echo "- BINANCE_BASE:"
+grep -n -E "(const|let|var)[[:space:]]+BINANCE_BASE\b" "$SCANNER_HTML" 2>/dev/null \
+    || echo "  (no encontrado: definición de BINANCE_BASE -- buscar a mano, puede estar en otra convención, p.ej. una URL fija sin const nombrada)"
+echo "- renderMarketContext (se espera DOM puro, como renderCaptureNotice/renderResults -- confirmar, no asumir):"
+check_definition_for_browser_markers "$SCANNER_HTML" "renderMarketContext" 200
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7, 8, 9, 10 y 11 -- hasta"
+echo "    tener el cuerpo literal de computeMarketContext()/BINANCE_BASE (y confirmar si"
+echo "    computeMarketContext llama a algo más sin confirmar) no se porta ni se verifica"
+echo "    la ruta CRIPTO. ==="
