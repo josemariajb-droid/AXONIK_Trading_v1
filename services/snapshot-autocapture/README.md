@@ -32,8 +32,39 @@ sobre datos, sin DOM ni dependencia de navegador (verificado con
   FastAPI real** (`test_evaluate_ticker_endpoint.py`) — acepta `candles`
   en bruto (camino normal, calcula `ind` con `build_ind()`) o `ind` ya
   calculado (compatibilidad, mutuamente excluyente, 422 si llegan los
-  dos o ninguno). **131 pruebas en este directorio, todas pasan. Sigue
+  dos o ninguno). **134 pruebas en este directorio, todas pasan. Sigue
   SIN aplicarse a `market_data_proxy.py` real** — ver Paso 1b más abajo.
+
+**Bug real encontrado por el oráculo Node (06/10/2026), corregido —
+`mk_result()` normalizaba con `round()` de Python en vez de replicar
+`Math.round()` de JS.** El oráculo (`generar_oraculo_evaluate_js.sh`)
+detectó en MU/ST-09 `globalScore` 62 (puerto) vs. 63 (JS real bajo
+Node) — aislado a `mk_result()`: `Math.round(score/maxRaw*100)` en el
+navegador, `round(score/max_raw*100)` en el puerto. `round()` de Python
+usa round-half-to-even (banker's rounding) en los `.5` exactos;
+`Math.round()` de JS redondea siempre hacia +Infinity. Confirmado con
+números reales, no solo la sospecha: raw=50, maxRaw=80 (`MAX_RAW_SCORE['ST-09']`)
+→ `50/80*100 = 62.5` exacto (sin ruido de punto flotante) →
+`round(62.5)==62` pero `Math.round(62.5)==63`. Es el único punto del
+puerto con este problema (`grep round(` en `evaluate_ticker_logic.py`/
+`indicator_calc.py` no encuentra ningún otro `round()`; `Math.ceil()`
+de `applyEventAdjustments`/`evaluateTicker` no tiene esta ambigüedad y
+ya estaba bien portado con `math.ceil()`). Corregido con un helper único
+`js_round()` (`floor(x+0.5)`, válido en negativos:
+`Math.round(-2.5)==-2`) usado en el único sitio que lo necesitaba.
+Pruebas de regresión en `test_evaluate_ticker_logic.py`
+(`test_js_round_*`, `test_mk_result_usa_js_round_no_round_de_python`,
+`test_eval_st09_regresion_mu_rounding_boundary`) — confirmado que fallan
+contra el código viejo antes de aplicar el fix.
+
+**Hallazgo adicional, NO corregido aquí (fuera de alcance, solo texto,
+nunca afecta a `score`/`applicable`/`verdict`):** los `factors[].text` de
+los 10 `evalXX` usan `.toFixed(N)` en JS, portado como f-strings
+`f"{x:.Nf}"` en Python — mismo tipo de divergencia en los `.5` exactos
+(confirmado: `(62.5).toFixed(0)` da `"63"` en JS, `f"{62.5:.0f}"` da
+`"62"` en Python). Solo afecta al texto legible de cada factor, nunca a
+los campos que compara `test_oraculo_vs_endpoint.py` — se deja
+documentado por si en algún momento se compara también el texto.
 
 **Para cerrar esto de verdad falta, en orden:** (1) aplicar el Paso 1b
 (pegar el endpoint, con la línea de decorador y los imports exactos

@@ -53,6 +53,21 @@ MAX_RAW_SCORE: dict[str, float] = {
 _NAN = float("nan")
 
 
+def js_round(x: float) -> int:
+    """Replica Math.round() de JS: floor(x + 0.5) -- redondeo hacia +Infinity
+    en los .5 exactos. round() de Python usa round-half-to-even (banker's
+    rounding): round(62.5) da 62, no 63 -- confirmado real con MU/ST-09
+    (globalScore 62 en el puerto vs. 63 en el oráculo Node; raw=50,
+    maxRaw=80, score/maxRaw*100 = 62.5 exacto en ambos lenguajes, sin ruido
+    de punto flotante). Válido también en negativos: Math.round(-2.5) es
+    -2, no -3 (floor(-2.5+0.5)=floor(-2.0)=-2) -- round() de Python también
+    da -2 ahí, pero por casualidad (-2 es par); no se puede asumir que
+    round() ya coincide "salvo casos raros" sin probarlo, de ahí este único
+    helper en vez de round() en cualquier cálculo que venga del JS.
+    """
+    return math.floor(x + 0.5)
+
+
 def f_factor(text: str, tf: str, points: float) -> dict:
     """Pieza: f() (línea 871) — constructor trivial de un factor."""
     return {"text": text, "tf": tf, "points": points}
@@ -78,7 +93,7 @@ def mk_result(id_: str, score: float, factors: list, applicable: bool,
         return {"id": id_, "score": 0, "baseScore": 0, "factors": factors,
                 "applicable": applicable, "verdict": "N/A"}
     max_raw = MAX_RAW_SCORE[id_]
-    normalized = round(score / max_raw * 100) if max_raw > 0 else 0
+    normalized = js_round(score / max_raw * 100) if max_raw > 0 else 0
     normalized = max(0, min(100, normalized))
     verdict = finalize_verdict(normalized, hard_no, rvol1d, rvol_min)
     return {"id": id_, "score": normalized, "baseScore": normalized,
