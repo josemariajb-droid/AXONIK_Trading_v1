@@ -317,6 +317,16 @@ Abreviatura usada: **DOC-IDEM** =
     y Wilder (`calcRSI`/`calcATR`/`calcADX`) — reutilizar una función
     para las dos da un número sutilmente distinto sin error, mismo
     patrón que ya costó `risk_pct`/`risk_per_share` y `atrMax`.
+  - **Fixtures reales para probar el puerto (04/10/2026):**
+    `docs/pipeline/generar_fixtures_js.sh` — extrae las 10 funciones,
+    las ejecuta con Node real sobre velas reales de `scan-batch`, y
+    escribe fixtures en `docs/pipeline/fixtures_js/` (velas + JS
+    ejecutado + salida de cada función por separado). Probado en esta
+    sesión de punta a punta con un `index.html` sintético (texto
+    literal ya confirmado) y un `scan-batch` sintético — confirmó
+    además numéricamente el hallazgo de `ema200` (el fallback coincide
+    exacto con la media simple de los cierres). Pendiente: ejecutarlo
+    contra el servidor real y comitir los fixtures.
   - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
     de `results[0]`.** `main()` ya empareja cada resultado de
     `/api/scan-batch` por `item.get("ticker")` contra

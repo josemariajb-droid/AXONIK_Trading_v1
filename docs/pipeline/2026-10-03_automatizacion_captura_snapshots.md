@@ -646,6 +646,30 @@ no por sesión de NYSE en hora local — señalado para que un puerto lo
 reproduzca tal cual, no lo "corrija" a hora de Nueva York sin que sea
 una decisión explícita aparte.
 
+**Fixtures reales para probar el puerto Python (04/10/2026):**
+`docs/pipeline/generar_fixtures_js.sh` extrae `computeIndicators` + las
+9 funciones de `/opt/axonik/scanner/index.html` (misma extracción por
+balance de llaves que `check_autocapture_triggers.sh`), las ejecuta con
+Node real (v24.15.0 confirmado en el servidor) sobre velas reales de
+`POST /api/scan-batch`, y escribe en `docs/pipeline/fixtures_js/`: las
+velas de entrada (congeladas), el JS exacto que se ejecutó (para
+inspección si algo no coincide) y la salida de `computeIndicators` más
+cada una de las 9 funciones por separado (para aislar cuál diverge, no
+solo que "algo no coincide"). NaN se serializa como el string `"NaN"`
+explícito, no como `null`.
+
+Probado en esta sesión contra un `index.html` sintético con el texto
+literal ya confirmado (Pregunta 9/10) y un servidor `scan-batch`
+sintético — extracción, validación de sintaxis JS y ejecución con Node
+funcionan de punta a punta. Confirmó además numéricamente, no solo
+leyendo el código, el hallazgo de `ema200`: con 120 cierres sintéticos,
+el último valor de `emaArr(closes,200,true)` coincidió exactamente con
+`mean(closes)` (152.06108333333336 en ambos casos).
+
+**Pendiente:** ejecutarlo contra el `index.html` y el proxy reales, y
+comitir `docs/pipeline/fixtures_js/` — con eso se construyen las
+pruebas del puerto Python de las 9 funciones + `computeIndicators`.
+
 **Matiz al punto 1 (04/10/2026): `scan-data` y `scan-batch` devuelven las
 mismas velas, solo cambia el envoltorio.** Se compararon respuestas reales
 de AAPL en ambos endpoints:
