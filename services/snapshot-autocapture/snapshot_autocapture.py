@@ -511,11 +511,30 @@ def _evaluar_y_capturar(ticker: str, data: dict, mercado: str, btc_gate_on: bool
     corresponde. Devuelve True si se capturó una señal nueva (no
     duplicada). No atrapa la excepción de evaluate_ticker() -- debe fallar
     ruidoso y parar la corrida, no silenciarse ticker a ticker.
+
+    DESVIACIÓN CONSCIENTE respecto al JS del scanner (07/10/2026, decisión
+    explícita del usuario): con el gate BTC OFF, la CAPTURA bloquea TODOS
+    los longs cripto, incluidos los de SC-01 -- aunque evalSC01() (el JS
+    real, confirmado literal) NO comprueba btcGateOn en absoluto (a
+    diferencia de SC-02/SC-PB, que sí la tienen incorporada vía mkNA()).
+    Regla del proyecto: BTC por debajo de su EMA50 diaria = cero longs
+    cripto, sin excepción -- la captura automática es deliberadamente más
+    estricta que lo que muestra el scanner (que sigue enseñando el score
+    de SC-01 igual, gate o no gate: esto NUNCA toca evaluate_ticker_logic.py,
+    que debe seguir siendo un puerto fiel del JS para que el oráculo de
+    verificar_cripto.sh siga comparando lo mismo que el navegador). Ver
+    docs/pipeline/BACKLOG.md.
     """
     evaluation = evaluate_ticker(ticker, data, mercado, btc_gate_on=btc_gate_on)
 
     trigger = etl.detect_auto_trigger(evaluation)
     if not trigger:
+        return False
+
+    if mercado == "CRYPTO" and not btc_gate_on:
+        log.info(f"{ticker}: trigger {trigger['type']} descartado en la captura -- gate BTC OFF "
+                 f"bloquea todos los longs cripto (regla del proyecto, más estricta que el JS del "
+                 f"scanner -- evalSC01 no exige el gate, pero la captura sí lo aplica aquí).")
         return False
 
     payload = construir_payload_snapshot(

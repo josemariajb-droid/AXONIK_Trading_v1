@@ -29,9 +29,18 @@
 #      Python) con el MISMO btcGateOn -- campo a campo, tolerancia 1e-9:
 #      hardNo/globalVerdict/globalScore y, por estrategia (SC-01/SC-02/
 #      SC-PB), applicable/score/verdict.
+#   5b. Si FORCE_BTC_GATE_ON=1: repite los pasos 4-5 con btcGateOn FORZADO
+#      a true en los dos lados (JS y Python), MISMAS velas reales --
+#      ejercita las ramas de scoring de SC-02/SC-PB que con el gate real
+#      (normalmente OFF) nunca se prueban. Es un TEST DE EQUIVALENCIA DE
+#      LÓGICA (¿el puerto calcula igual que el JS cuando el gate está
+#      ON?), NO una señal de mercado real -- el informe lo marca como tal
+#      y dice qué ramas (SC-01/SC-02/SC-PB, aplicable o con qué naReason)
+#      quedaron ejercitadas con cada ticker.
 #   6. Imprime un informe corto (PASA/FALLA por ticker/estrategia + estado
-#      del gate) y guarda la salida completa (candles, JS extraído,
-#      resultados Node y Python, diff) en docs/pipeline/.
+#      del gate, + la pasada de gate forzado si se pidió) y guarda la
+#      salida completa (candles, JS extraído, resultados Node y Python,
+#      diff) en docs/pipeline/.
 #   7. git add + commit + push de esa salida a la rama actual. Si el push
 #      falla (red, auth, conflicto), NO se pierde el resultado: se
 #      imprime el informe completo por stdout para pegarlo a mano.
@@ -45,6 +54,9 @@
 #   docs/pipeline/verificar_cripto.sh
 #   SCANNER_HTML=/otra/ruta/index.html BINANCE_BASE=https://api.binance.com \
 #     docs/pipeline/verificar_cripto.sh
+#   FORCE_BTC_GATE_ON=1 docs/pipeline/verificar_cripto.sh
+#     -- añade la pasada 5b (equivalencia de lógica SC-02/SC-PB con el
+#        gate ON), sin tocar el resultado real de la pasada normal.
 
 set -uo pipefail  # sin -e: el script decide explícitamente cuándo abortar
 
@@ -253,11 +265,19 @@ fi
 # --- Paso 4: Node real -- evaluateTicker + detectAutoTrigger + gate -------
 echo
 log_full "=== 4. Ejecutando Node real (evaluateTicker CRYPTO + detectAutoTrigger + gate BTC) ==="
+# forceGate: "" (usa el gate real/degradado, vía computeGate()) | "true" |
+#            "false" -- override explícito, sin tocar computeMarketContext().
+#            Usado por la pasada de FORCE_BTC_GATE_ON (equivalencia de
+#            lógica SC-02/SC-PB con gate ON, ver más abajo).
+# suffix: "" para la pasada normal, "_gateon" para la forzada -- nunca
+#         pisa los ficheros de la pasada normal.
 DRIVER_JS="$OUT_DIR/_driver.js"
 cat > "$DRIVER_JS" <<'DRIVER_EOF'
 const fs = require('fs');
-const [, , extractedPath, gatePath, outDir, tickersCsv] = process.argv;
+const [, , extractedPath, gatePath, outDir, tickersCsv, forceGateArg, suffixArg] = process.argv;
 const tickers = tickersCsv.split(',');
+const forceGate = forceGateArg === 'true' ? true : (forceGateArg === 'false' ? false : null);
+const suffix = suffixArg || '';
 
 eval(fs.readFileSync(extractedPath, 'utf8'));
 
@@ -283,8 +303,9 @@ async function computeGate() {
 }
 
 (async () => {
-    const gate = await computeGate();
-    fs.writeFileSync(`${outDir}/_gate.json`, JSON.stringify(gate, null, 2));
+    const gate = forceGate !== null ? { gateOn: forceGate, real: false, error: null, forced: true }
+                                     : await computeGate();
+    fs.writeFileSync(`${outDir}/_gate${suffix}.json`, JSON.stringify(gate, null, 2));
 
     const nanSafeReplacer = (_, v) => (typeof v === 'number' && Number.isNaN(v)) ? 'NaN' : v;
     for (const ticker of tickers) {
@@ -295,22 +316,21 @@ async function computeGate() {
         }
         const evalResult = evaluateTicker(ticker, ind, null, 'CRYPTO', DEFAULT_SETTINGS, gate.gateOn, null);
         const triggerResult = detectAutoTrigger(evalResult);
-        fs.writeFileSync(`${outDir}/${ticker}_evaluate_output.json`,
+        fs.writeFileSync(`${outDir}/${ticker}_evaluate_output${suffix}.json`,
             JSON.stringify(evalResult, nanSafeReplacer, 2));
-        fs.writeFileSync(`${outDir}/${ticker}_trigger_output.json`,
+        fs.writeFileSync(`${outDir}/${ticker}_trigger_output${suffix}.json`,
             JSON.stringify(triggerResult, nanSafeReplacer, 2));
     }
-    console.log('Node: escritos _gate.json + <TICKER>_evaluate_output.json/_trigger_output.json');
+    console.log(`Node: escritos _gate${suffix}.json + <TICKER>_evaluate_output${suffix}.json/_trigger_output${suffix}.json`);
 })();
 DRIVER_EOF
 
 TICKERS_CSV=$(IFS=,; echo "${TICKERS[*]}")
-if ! node "$DRIVER_JS" "$EXTRACTED_JS" "${GATE_JS:-}" "$OUT_DIR" "$TICKERS_CSV" >>"$REPORT_FULL" 2>&1; then
+if ! node "$DRIVER_JS" "$EXTRACTED_JS" "${GATE_JS:-}" "$OUT_DIR" "$TICKERS_CSV" "" "" >>"$REPORT_FULL" 2>&1; then
     abort "el driver de Node falló -- ver $REPORT_FULL para el error completo."
     cat "$REPORT_FULL"
     exit 1
 fi
-rm -f "$DRIVER_JS"
 
 GATE_ON="false"
 GATE_DESC="OFF (degradado)"
@@ -326,15 +346,35 @@ if [[ -f "$OUT_DIR/_gate.json" ]]; then
 fi
 log_full "Gate BTC: $GATE_DESC"
 
+# Pasada adicional opcional: gate FORZADO a ON en los dos lados (JS y
+# Python), mismas velas reales -- test de EQUIVALENCIA DE LÓGICA de
+# SC-02/SC-PB (sus ramas de scoring con el gate ON), no una señal de
+# mercado real. Solo si FORCE_BTC_GATE_ON está activo -- nunca se activa
+# sola ni cambia el resultado/gate de la pasada normal de arriba.
+FORCE_GATE_RAN=0
+if [[ "${FORCE_BTC_GATE_ON:-0}" =~ ^(1|true|TRUE|yes)$ ]]; then
+    echo
+    log_full "=== 4b. Pasada adicional: gate BTC FORZADO a ON (equivalencia de lógica, NO señal de mercado) ==="
+    if ! node "$DRIVER_JS" "$EXTRACTED_JS" "${GATE_JS:-}" "$OUT_DIR" "$TICKERS_CSV" "true" "_gateon" >>"$REPORT_FULL" 2>&1; then
+        abort "el driver de Node (gate forzado) falló -- ver $REPORT_FULL."
+        cat "$REPORT_FULL"
+        exit 1
+    fi
+    FORCE_GATE_RAN=1
+fi
+rm -f "$DRIVER_JS"
+
 # --- Paso 5: comparar contra el puerto Python --------------------------------
-echo
-log_full "=== 5. Comparando contra evaluate_ticker_logic.py (tolerancia 1e-9) ==="
-COMPARE_JSON="$OUT_DIR/_comparacion.json"
-PYTHONPATH="$PY_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$OUT_DIR" "$GATE_ON" "$TICKERS_CSV" "$COMPARE_JSON" <<'PYEOF' >>"$REPORT_FULL" 2>&1
+# Script reutilizable (se llama una vez con el gate real/degradado, y una
+# segunda vez con el gate forzado a ON si FORCE_BTC_GATE_ON está activo) --
+# acepta un sufijo para no mezclar los ficheros de las dos pasadas.
+COMPARE_PY="$OUT_DIR/_compare.py"
+cat > "$COMPARE_PY" <<'PYEOF'
 import json, math, sys
+
 import evaluate_ticker_logic as etl
 
-out_dir, gate_on_str, tickers_csv, compare_json_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+out_dir, gate_on_str, tickers_csv, compare_json_path, suffix = sys.argv[1:6]
 gate_on = gate_on_str == "true"
 tickers = tickers_csv.split(",")
 settings = {"priceMin": 8, "atrMax": 4, "rvolMin": 1}
@@ -362,9 +402,9 @@ for ticker in tickers:
     py_result = etl.evaluate_ticker(ticker, ind, None, "CRYPTO", settings, gate_on, None)
     py_trigger = etl.detect_auto_trigger(py_result)
 
-    js_result = json.load(open(f"{out_dir}/{ticker}_evaluate_output.json"))
+    js_result = json.load(open(f"{out_dir}/{ticker}_evaluate_output{suffix}.json"))
     js_result = etl.sentinel_to_nan(js_result)
-    js_trigger = json.load(open(f"{out_dir}/{ticker}_trigger_output.json"))
+    js_trigger = json.load(open(f"{out_dir}/{ticker}_trigger_output{suffix}.json"))
     js_trigger = etl.sentinel_to_nan(js_trigger)
 
     diffs = []
@@ -377,6 +417,7 @@ for ticker in tickers:
 
     py_by_id = {s["id"]: s for s in py_result["strategies"]}
     js_by_id = {s["id"]: s for s in js_result["strategies"]}
+    estrategias = {}
     for sid in sorted(set(py_by_id) | set(js_by_id)):
         ps, js = py_by_id.get(sid), js_by_id.get(sid)
         if ps is None or js is None:
@@ -385,6 +426,10 @@ for ticker in tickers:
         for field in ("applicable", "score", "verdict"):
             if not close(ps.get(field), js.get(field)):
                 diffs.append(f"{sid}.{field}: py={ps.get(field)!r} js={js.get(field)!r}")
+        # applicable/naReason -- para el resumen de "qué ramas se
+        # ejercitaron" en la pasada de gate forzado (ver más abajo).
+        estrategias[sid] = {"applicable": bool(js.get("applicable")),
+                             "naReason": js.get("naReason")}
 
     trigger_diffs = []
     if (py_trigger is None) != (js_trigger is None):
@@ -397,7 +442,8 @@ for ticker in tickers:
                                   f"js={sorted(s['id'] for s in js_trigger['strategies'])!r}")
 
     results[ticker] = {"diffs": diffs, "trigger_diffs": trigger_diffs,
-                        "pasa": not diffs and not trigger_diffs}
+                        "pasa": not diffs and not trigger_diffs,
+                        "estrategias": estrategias}
     print(f"--- {ticker} ---")
     print(f"  PASA" if results[ticker]["pasa"] else f"  FALLA:")
     for d in diffs + trigger_diffs:
@@ -405,12 +451,33 @@ for ticker in tickers:
 
 json.dump(results, open(compare_json_path, "w"), indent=2, ensure_ascii=False)
 PYEOF
-PY_EXIT=$?
+
+run_compare_pass() {
+    local gate_value="$1" suffix="$2" label="$3" compare_json="$4"
+    echo
+    log_full "=== $label ==="
+    PYTHONPATH="$PY_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$COMPARE_PY" \
+        "$OUT_DIR" "$gate_value" "$TICKERS_CSV" "$compare_json" "$suffix" >>"$REPORT_FULL" 2>&1
+    if [[ ! -f "$compare_json" ]]; then
+        log_full "ERROR: no se generó $compare_json -- ver detalle arriba ($REPORT_FULL)."
+        ABORTED=1
+    fi
+}
+
+COMPARE_JSON="$OUT_DIR/_comparacion.json"
+run_compare_pass "$GATE_ON" "" "5. Comparando contra evaluate_ticker_logic.py (tolerancia 1e-9)" "$COMPARE_JSON"
+
+COMPARE_JSON_GATEON="$OUT_DIR/_comparacion_gateon.json"
+if [[ "$FORCE_GATE_RAN" -eq 1 ]]; then
+    run_compare_pass "true" "_gateon" \
+        "5b. Comparando con gate FORZADO a ON (equivalencia de lógica SC-02/SC-PB)" \
+        "$COMPARE_JSON_GATEON"
+fi
+rm -f "$COMPARE_PY"
 
 echo
 log_full "=== INFORME CORTO ==="
 log_full "Gate BTC: $GATE_DESC"
-TOTAL_PASA=0
 if [[ -f "$COMPARE_JSON" ]]; then
     while IFS= read -r line; do log_full "$line"; done < <(python3 -c "
 import json
@@ -426,6 +493,40 @@ else
     log_full "ERROR: no se generó $COMPARE_JSON -- ver detalle arriba ($REPORT_FULL)."
     ABORTED=1
 fi
+
+if [[ "$FORCE_GATE_RAN" -eq 1 && -f "$COMPARE_JSON_GATEON" ]]; then
+    log_full ""
+    log_full "Gate forzado a ON (equivalencia de lógica, NO es una señal de mercado real):"
+    while IFS= read -r line; do log_full "$line"; done < <(python3 -c "
+import json
+r = json.load(open('$COMPARE_JSON_GATEON'))
+pasa = sum(1 for v in r.values() if v['pasa'])
+for ticker, v in r.items():
+    estado = 'PASA' if v['pasa'] else 'FALLA'
+    detalle = '' if v['pasa'] else ' -- ' + '; '.join(v['diffs'] + v['trigger_diffs'])[:200]
+    print(f'{ticker} (gate ON): {estado}{detalle}')
+print(f'Resultado global (gate ON): {pasa}/{len(r)} PASA')
+
+# Qué ramas se ejercitaron de verdad: SC-02/SC-PB applicable=True con el
+# gate forzado a ON significa que, con estas velas, también se satisfizo
+# el resto de condiciones de la estrategia (no solo el check del gate).
+# applicable=False con el gate ON puede ser por otro motivo (p.ej.
+# ticker no altcoin para SC-02) -- se cita la razón real, no se asume.
+print()
+print('Ramas ejercitadas con el gate ON (naReason cuando sigue N/A):')
+for sid in ('SC-01', 'SC-02', 'SC-PB'):
+    por_ticker = []
+    for ticker, v in r.items():
+        est = v['estrategias'].get(sid, {})
+        if est.get('applicable'):
+            por_ticker.append(f'{ticker}=aplicable')
+        else:
+            razon = est.get('naReason') or 'N/A'
+            por_ticker.append(f'{ticker}={razon}')
+    print(f'  {sid}: ' + ', '.join(por_ticker))
+")
+fi
+
 log_full "Salida completa: $REPORT_FULL"
 log_full "Fixtures: $OUT_DIR"
 

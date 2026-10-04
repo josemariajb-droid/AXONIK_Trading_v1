@@ -187,6 +187,83 @@ def test_evaluate_ticker_envia_btc_gate_on_real_en_el_payload():
     assert kwargs["json"]["mode"] == "CRYPTO"
 
 
+# --- Desviación consciente (07/10/2026): gate BTC bloquea TODOS los
+#     longs cripto en la CAPTURA, incluido SC-01 -- aunque evalSC01() (el
+#     JS real) no comprueba btcGateOn. Regla del proyecto: BTC < EMA50
+#     diaria = cero longs cripto, sin excepción, más estricta que lo que
+#     enseña el scanner. -----------------------------------------------
+
+def _evaluacion_sc01_trigger_auto_high():
+    """SC-01 con score>=90 y applicable=True -- dispara AUTO_HIGH en
+    detect_auto_trigger() real (sin mockear esa parte), group='crypto'
+    (STRATEGY_META['SC-01']). evalSC01() real nunca comprueba btcGateOn
+    -- este resultado es igual de válido con el gate ON o OFF, a
+    propósito, para aislar que el bloqueo viene de _evaluar_y_capturar(),
+    no de evaluate_ticker_logic.py (que no se toca)."""
+    return {
+        "ticker": "BTC", "hardNo": False, "globalVerdict": "OPERAR", "globalScore": 95,
+        "strategies": [
+            {"id": "SC-01", "applicable": True, "score": 95, "verdict": "OPERAR",
+             "group": "crypto", "factors": []},
+        ],
+    }
+
+
+def test_evaluar_y_capturar_bloquea_sc01_con_gate_off(monkeypatch):
+    monkeypatch.setattr(sa, "evaluate_ticker", lambda *a, **kw: _evaluacion_sc01_trigger_auto_high())
+    capturado = {"llamado": False}
+    monkeypatch.setattr(sa, "capture_signal", lambda *a, **kw: capturado.__setitem__("llamado", True) or True)
+
+    resultado = sa._evaluar_y_capturar("BTC", {}, "CRYPTO", btc_gate_on=False,
+                                        data_ts="2026-01-01T00:00:00Z", snapshot_ts="2026-01-01T00:00:00Z",
+                                        dry_run=False)
+
+    assert resultado is False
+    assert capturado["llamado"] is False, (
+        "con el gate OFF, SC-01 NO debe llegar a capture_signal() aunque evalSC01() real "
+        "no comprueba btcGateOn -- es la desviación consciente de la capa de captura."
+    )
+
+
+def test_evaluar_y_capturar_permite_sc01_con_gate_on(monkeypatch):
+    """Mismo trigger exacto, solo cambia btc_gate_on -- confirma que el
+    bloqueo de arriba es por el gate, no porque la función nunca capture
+    nada."""
+    monkeypatch.setattr(sa, "evaluate_ticker", lambda *a, **kw: _evaluacion_sc01_trigger_auto_high())
+    capturado = {"llamado": False}
+    monkeypatch.setattr(sa, "capture_signal", lambda *a, **kw: capturado.__setitem__("llamado", True) or True)
+
+    resultado = sa._evaluar_y_capturar("BTC", {}, "CRYPTO", btc_gate_on=True,
+                                        data_ts="2026-01-01T00:00:00Z", snapshot_ts="2026-01-01T00:00:00Z",
+                                        dry_run=False)
+
+    assert resultado is True
+    assert capturado["llamado"] is True
+
+
+def test_evaluar_y_capturar_gate_off_no_bloquea_nyse(monkeypatch):
+    """El guard está scoped a mercado=='CRYPTO' -- NYSE nunca lo toca
+    (siempre llama con btc_gate_on=False, que no debe convertirse en un
+    bloqueo nuevo para acciones)."""
+    evaluacion_nyse = {
+        "ticker": "AAPL", "hardNo": False, "globalVerdict": "OPERAR", "globalScore": 95,
+        "strategies": [
+            {"id": "ST-16", "applicable": True, "score": 95, "verdict": "OPERAR",
+             "group": "swing", "factors": []},
+        ],
+    }
+    monkeypatch.setattr(sa, "evaluate_ticker", lambda *a, **kw: evaluacion_nyse)
+    capturado = {"llamado": False}
+    monkeypatch.setattr(sa, "capture_signal", lambda *a, **kw: capturado.__setitem__("llamado", True) or True)
+
+    resultado = sa._evaluar_y_capturar("AAPL", {}, "NYSE", btc_gate_on=False,
+                                        data_ts="2026-01-01T00:00:00Z", snapshot_ts="2026-01-01T00:00:00Z",
+                                        dry_run=False)
+
+    assert resultado is True
+    assert capturado["llamado"] is True
+
+
 # --- _ejecutar_cripto(): 24/7, dry-run obligatorio probado ------------------
 
 def _entry(ticker):

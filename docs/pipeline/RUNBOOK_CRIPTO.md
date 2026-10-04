@@ -1,13 +1,25 @@
 # Runbook — ruta CRIPTO de la captura automática (BTC/ETH/SOL)
 
-**Estado: NO DESPLEGADO, NO VERIFICADO contra el servidor real.**
-Implementación + pruebas offline listas (06/10/2026), revisión pendiente
-del usuario antes de cualquier paso siguiente. BTC/ETH/SOL siguen con
-`ESTADO` distinto de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito — no
-tocar la hoja hasta el Paso 3 de este documento.
+**Estado: NO DESPLEGADO. Paso 1 EJECUTADO contra el servidor real
+(07/10/2026) — `3/3 PASA, Gate BTC OFF (real)`.** Paso 2 (dry-run real
+del script) todavía pendiente. BTC/ETH/SOL siguen con `ESTADO` distinto
+de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito — no tocar la hoja
+hasta el Paso 3 de este documento.
 
-Contexto: `docs/pipeline/BACKLOG.md` (entrada 5, bloque "CRIPTO
-06/10/2026") y `docs/pipeline/BLOQUEOS.md` (los dos bloqueos reales:
+**Gate BTC real confirmado ejecutable, pero el puerto Python del gate
+sigue siendo un sustituto temporal** — `computeMarketContext()` se pudo
+extraer y correr de verdad en el servidor (ya no degradó), pero el texto
+literal extraído no se ha pegado en esta sesión todavía, así que
+`compute_btc_gate()` en Python sigue forzando `False` (hoy coincide con
+el valor real por cómo está el mercado, no porque ya esté portado) —
+detalle en `docs/pipeline/BLOQUEOS.md`, bloqueo 1.
+
+**Desviación consciente añadida (07/10/2026):** la CAPTURA (no el
+scanner) bloquea TODOS los longs cripto con el gate OFF, incluido SC-01
+— ver Paso 2 más abajo y `docs/pipeline/BACKLOG.md`.
+
+Contexto: `docs/pipeline/BACKLOG.md` (entrada 5, bloque "CRIPTO") y
+`docs/pipeline/BLOQUEOS.md` (los dos bloqueos reales:
 `computeMarketContext()`/gate BTC y `BINANCE_BASE`).
 
 ## Antes de empezar
@@ -57,10 +69,21 @@ pushea el resultado a la rama actual.
   sí esté bien portado (no lo está: `compute_btc_gate()` es un sustituto
   temporal, ver `BLOQUEOS.md`).
 - Si en cambio sale `Gate BTC: ON (real)` u `OFF (real)`: significa que
-  `computeMarketContext()` SÍ se pudo extraer y ejecutar de verdad —
-  pegar la salida completa del script en la conversación para portar
-  `compute_market_context()` a Python y cerrar el bloqueo 1 antes de
-  seguir.
+  `computeMarketContext()` SÍ se pudo extraer y ejecutar de verdad — **ya
+  ocurrió una vez (07/10/2026, `OFF (real)`)**, pero el texto literal
+  extraído todavía no se pegó en esta sesión. Pegar la salida completa
+  del script (o el fichero
+  `docs/pipeline/fixtures_js/oraculo_cripto/compute_market_context_extracted.js`
+  que queda guardado en esa ejecución) para portar
+  `compute_market_context()` a Python de verdad y cerrar el bloqueo 1.
+- **Opcional — `FORCE_BTC_GATE_ON=1 docs/pipeline/verificar_cripto.sh`:**
+  repite la comparación con `btcGateOn` forzado a `true` en JS y Python,
+  mismas velas reales. Es un TEST DE EQUIVALENCIA DE LÓGICA de SC-02/
+  SC-PB (sus ramas de scoring con el gate ON), **no una señal de mercado
+  real** — útil porque con el gate real normalmente OFF, esas dos ramas
+  nunca se ejercitan en la pasada normal. El informe añade una sección
+  "Gate forzado a ON" con PASA/FALLA y qué estrategias quedaron
+  `aplicable` (o con qué `naReason`) por ticker.
 - **Si algún ticker da `FALLA`:** el mensaje ya señala el campo exacto
   que difiere (p.ej. `SC-01.score: py=65 js=70`). NO seguir al Paso 2 --
   pegar la salida completa (`docs/pipeline/verificacion_cripto_<TS>.txt`,
@@ -84,7 +107,8 @@ no seguir al Paso 2 hasta pegar el resultado y decidir con el usuario.
 
 ## Paso 2 — dry-run real del script de captura (rama cripto)
 
-Solo si el Paso 1 dio `3/3 PASA`.
+Solo si el Paso 1 dio `3/3 PASA`. **Comando exacto, listo para ejecutar
+tal cual:**
 
 ```bash
 cd services/snapshot-autocapture
@@ -106,7 +130,17 @@ python3 snapshot_autocapture.py --market crypto --dry-run
   score, estrategia) — **y volver a poner `ESTADO` como estaba
   inmediatamente después**, no dejarlo en `ACTIVO` desde este paso.
 - Debe verse en el log `Gate BTC: OFF` (viene de `compute_btc_gate()`,
-  el mismo sustituto temporal del Paso 1) — esperado, no es un fallo.
+  el mismo sustituto temporal del Paso 1 — hoy coincide con el valor
+  real confirmado en el Paso 1, pero sigue siendo el sustituto, no el
+  cálculo real) — esperado, no es un fallo.
+- **Con el gate OFF, NINGÚN ticker cripto debe capturar nada, aunque su
+  trigger sea `AUTO_HIGH`/`AUTO_MULTI` vía SC-01** (desviación consciente
+  de la capa de captura, 07/10/2026 — ver `docs/pipeline/BACKLOG.md`):
+  si se activa `BTC` temporalmente para probar el camino completo y el
+  log muestra `trigger ... descartado en la captura -- gate BTC OFF
+  bloquea todos los longs cripto`, es el comportamiento CORRECTO, no un
+  bug — `evalSC01()` en el JS real no exige el gate, pero la captura sí
+  lo exige aquí, a propósito, más estricta que el scanner.
 - Ningún POST real a `/api/snapshots` ni a `/api/evaluate-ticker` (la
   rama cripto construye `ind` vía `build_ind()` llamando a
   `/api/evaluate-ticker` igual que NYSE, con `candles` de Binance en vez
@@ -118,8 +152,8 @@ python3 snapshot_autocapture.py --market crypto --dry-run
   para la rama NYSE).
 
 **Cuándo parar aquí:** si algo en el log no tiene sentido (precio
-claramente mal, excepción no esperada) — no seguir, pegar el log
-completo.
+claramente mal, excepción no esperada, o una captura SÍ ocurre con el
+gate OFF) — no seguir, pegar el log completo.
 
 ## Paso 3 — decisión del usuario, no automatizada aquí
 

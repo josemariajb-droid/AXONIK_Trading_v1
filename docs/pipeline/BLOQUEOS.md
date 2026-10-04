@@ -43,6 +43,23 @@ con el texto literal, portar `compute_market_context()` a
 puramente cripto, sin dependencias de `ind`/`evaluate_ticker`) y sustituir
 `compute_btc_gate()` por la llamada real.
 
+**Actualización (07/10/2026):** el usuario ejecutó
+`docs/pipeline/verificar_cripto.sh` en el servidor real -- resultado
+`3/3 PASA, Gate BTC OFF (real)`. Esto confirma que `computeMarketContext()`
+SÍ se pudo extraer sin ambigüedad y ejecutar bajo Node sin lanzar (el
+script ya no degradó el gate, salió "(real)" no "(degradado)") -- pero
+**el texto literal extraído no se ha pegado en esta sesión**, así que
+este bloqueo SIGUE ABIERTO: `compute_btc_gate()` en Python sigue siendo
+el sustituto que fuerza `False`, que hoy coincide con el valor real por
+cómo está el mercado, no porque ya esté portado. Para cerrar esto de
+verdad falta pegar aquí (o en un `pregunta11_salida.txt` nuevo) la
+salida completa de la Pregunta 11 -- en concreto el cuerpo de
+`computeMarketContext()` tal cual lo extrajo `verificar_cripto.sh`
+(queda guardado en
+`docs/pipeline/fixtures_js/oraculo_cripto/compute_market_context_extracted.js`
+en cada ejecución real, buscarlo ahí primero antes de pedir que se
+vuelva a correr la Pregunta 11 a mano).
+
 ## 2. `BINANCE_BASE` -- valor real sin confirmar (06/10/2026)
 
 **Qué falta:** el valor de la constante `BINANCE_BASE`, usada en

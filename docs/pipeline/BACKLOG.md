@@ -457,6 +457,37 @@ Abreviatura usada: **DOC-IDEM** =
     `ESTADO` distinto de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito**
     (instrucción explícita del usuario) hasta que esa verificación pase
     — no se ha tocado la hoja ni se ha creado ningún timer cripto.
+  - **Estado (07/10/2026): verificación real ejecutada por el usuario —
+    3/3 PASA, Gate BTC OFF (real).** `computeMarketContext()` SÍ se pudo
+    extraer y ejecutar de verdad contra el servidor (`verificar_cripto.sh`
+    ya no degradó el gate) — pero el texto literal extraído no se ha
+    pegado en esta sesión, así que `compute_btc_gate()` en
+    `snapshot_autocapture.py` **sigue siendo el sustituto temporal**
+    (fuerza `False`) — coincide con el resultado real de hoy por
+    casualidad de mercado, no porque ya esté portado. Bloqueo 1 de
+    `BLOQUEOS.md` actualizado con este matiz, sigue abierto hasta pegar
+    el texto literal de `computeMarketContext()`.
+  - **Desviación consciente añadida (07/10/2026, instrucción explícita
+    del usuario):** el gate BTC se aplica en la CAPA DE CAPTURA
+    (`_evaluar_y_capturar()`) a TODOS los longs cripto, **incluido
+    SC-01** — aunque `evalSC01()` (el JS real, confirmado literal) no
+    comprueba `btcGateOn` en absoluto (a diferencia de SC-02/SC-PB, que
+    sí la tienen incorporada vía `mkNA()`). Regla del proyecto: BTC por
+    debajo de su EMA50 diaria = cero longs cripto, sin excepción — la
+    captura automática es deliberadamente MÁS ESTRICTA que lo que
+    enseña el scanner. No toca `evaluate_ticker_logic.py` (sigue siendo
+    un puerto fiel del JS, para que `verificar_cripto.sh` siga
+    comparando lo mismo que el navegador) — el bloqueo vive solo en
+    `snapshot_autocapture.py`. Probado:
+    `test_evaluar_y_capturar_bloquea_sc01_con_gate_off`/
+    `_permite_sc01_con_gate_on`/`_gate_off_no_bloquea_nyse`.
+  - **`verificar_cripto.sh` ampliado con una pasada de gate forzado a
+    ON** (`FORCE_BTC_GATE_ON=1`) — ejecuta una segunda comparación
+    JS-vs-Python con las MISMAS velas reales pero `btcGateOn=true` en
+    los dos lados, para ejercitar las ramas de scoring de SC-02/SC-PB
+    que con el gate real OFF nunca se prueban. Es un test de
+    equivalencia de lógica, no de mercado — el informe dice
+    explícitamente qué ramas quedaron cubiertas.
 
 ### 6. [BAJA] `/scanner` mantiene su copia local de `evaluateTicker()` tras crear `/api/evaluate-ticker`
 
