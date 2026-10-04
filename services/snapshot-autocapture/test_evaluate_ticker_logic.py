@@ -5,11 +5,16 @@ pruebas end-to-end contra datos reales -- confirman que la traducción
 JS->Python no introdujo errores de signo/umbral/orden, igual que ya
 pasó una vez con risk_pct/risk_per_share.
 """
+import json
 import math
+from pathlib import Path
+
+import pytest
 
 import evaluate_ticker_logic as m
 
 SETTINGS = {"priceMin": 8, "atrMax": 6, "rvolMin": 1.0}
+ORACULO_FIXTURES_DIR = Path(__file__).parent.parent.parent / "docs" / "pipeline" / "fixtures_js" / "oraculo_evaluate"
 
 
 def test_eval_st01_suma_exacta_de_puntos():
@@ -121,14 +126,11 @@ def test_eval_st09_regresion_mu_rounding_boundary():
     prevC.h==prevC.l -- y el bonus de VWAP 15M se omite con vwap=NaN, para
     que el raw total sea exactamente 50 y no otro número).
 
-    NO son las velas reales de MU (esta sesión no tiene las velas reales
-    que generó el oráculo en el servidor -- docs/pipeline/fixtures_js/
-    oraculo_evaluate/MU_*_candles.json no está en este checkout). Esto
-    reproduce el MISMO mecanismo (el límite de redondeo 62.5) con datos
-    sintéticos controlados, no las velas originales. Si se comitea el
-    fixture real de MU, añadir además una prueba contra esas velas
-    exactas con build_ind()+evaluate_ticker(), mismo patrón que
-    test_evaluate_ticker_endpoint.py.
+    Son datos sintéticos, no las velas reales de MU -- la prueba de abajo
+    (test_eval_st09_regresion_mu_real_fixture) usa las velas reales del
+    oráculo una vez comiteadas; esta se queda como reproducción mínima y
+    controlada del mismo mecanismo, independiente de que ese fixture
+    exista o cambie.
     """
     candles = [{"o": 1, "h": 10, "l": 9, "c": 9.5, "v": 1000} for _ in range(20)]
     candles.append({"o": 1, "h": 100, "l": 100, "c": 100, "v": 2000})  # prevC: h==l -> rangeClose NaN
@@ -155,6 +157,53 @@ def test_eval_st09_regresion_mu_rounding_boundary():
         "con round() de Python en vez de js_round() esto daría 62 -- si vuelve a dar "
         "62, el bug de redondeo ha vuelto"
     )
+
+
+def test_eval_st09_regresion_mu_real_fixture():
+    """
+    Mismo caso que test_eval_st09_regresion_mu_rounding_boundary, pero con
+    las velas REALES de MU del oráculo
+    (docs/pipeline/fixtures_js/oraculo_evaluate/MU_*_candles.json,
+    generadas en el servidor real con generar_oraculo_evaluate_js.sh).
+    Confirma contra el oráculo real completo, no solo el raw/score de
+    ST-09 aislado: globalScore, hardNo y el resumen de las 7 estrategias
+    NYSE -- incluida la confirmación independiente del propio oráculo de
+    que raw=50/maxRaw=80 para ST-09 (el 62.5 exacto), no un número
+    inventado para esta prueba.
+
+    Se omite (no falla) si el fixture no está en este checkout -- no
+    todas las sesiones tienen docs/pipeline/fixtures_js/oraculo_evaluate/
+    comiteado.
+    """
+    candles_path = ORACULO_FIXTURES_DIR / "MU_1d_candles.json"
+    oracle_path = ORACULO_FIXTURES_DIR / "MU_evaluate_output.json"
+    if not candles_path.is_file() or not oracle_path.is_file():
+        pytest.skip(f"No hay fixtures de MU en {ORACULO_FIXTURES_DIR}")
+
+    data = {}
+    for tf in ("1d", "1h", "15m"):
+        data[tf] = {"candles": json.loads((ORACULO_FIXTURES_DIR / f"MU_{tf}_candles.json").read_text())}
+    ind = m.build_ind(data)
+
+    settings = {"priceMin": 8, "atrMax": 4, "rvolMin": 1}
+    r = m.evaluate_ticker("MU", ind, None, "NYSE", settings, False, None)
+    oracle = json.loads(oracle_path.read_text())
+
+    assert r["hardNo"] == oracle["hardNo"]
+    assert r["globalScore"] == oracle["globalScore"] == 63, (
+        "si esto vuelve a dar 62, el bug de round() de Python ha vuelto"
+    )
+    st09 = next(s for s in r["strategies"] if s["id"] == "ST-09")
+    st09_oracle = next(s for s in oracle["strategies"] if s["id"] == "ST-09")
+    assert st09["rawScore"] == st09_oracle["rawScore"] == 50
+    assert st09["maxRawScore"] == st09_oracle["maxRawScore"] == 80
+    assert st09["score"] == st09_oracle["score"] == 63
+    for s, s_oracle in zip(sorted(r["strategies"], key=lambda s: s["id"]),
+                           sorted(oracle["strategies"], key=lambda s: s["id"])):
+        assert s["id"] == s_oracle["id"]
+        assert s["applicable"] == s_oracle["applicable"], s["id"]
+        assert s["score"] == s_oracle["score"], s["id"]
+        assert s["verdict"] == s_oracle["verdict"], s["id"]
 
 
 def test_mk_na_no_aplicable():

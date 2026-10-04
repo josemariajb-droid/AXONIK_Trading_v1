@@ -1,0 +1,4 @@
+Cobertura real de detectAutoTrigger() -- 17 ticker(s) probados hoy:
+  AUTO_MULTI: 1 ticker(s) -- AAPL
+  AUTO_HIGH: 2 ticker(s) -- MSFT, TSM
+  ninguno: 14 ticker(s) -- AMD, AMZN, AVGO, GOOGL, INTC, LLY, META, MRNA, MU, NVDA, NVO, PFE, PLTR, QCOM
