@@ -538,6 +538,31 @@ instrucción explícita del usuario, mismo criterio que ya aplicó a
 `risk_pct`/`risk_per_share` y al shape de `scan-batch`: texto literal
 antes de tocar código, nunca una suposición más sobre otra suposición.
 
+**Matiz al punto 1 (04/10/2026): `scan-data` y `scan-batch` devuelven las
+mismas velas, solo cambia el envoltorio.** Se compararon respuestas reales
+de AAPL en ambos endpoints:
+
+| | `GET /api/scan-data` (`fetchNyseTicker`) | `POST /api/scan-batch` (`snapshot_autocapture.py`) |
+|---|---|---|
+| Ruta al bloque por TF | `data` | `results[0].data` |
+| Vela | `{t,o,h,l,c,v}` | `{t,o,h,l,c,v}` |
+| `t` | segundos epoch | segundos epoch |
+| Clave hermana de `candles` | `periods` | `periods` |
+| n en 1d / 1h / 15m | 120 / 100 / 96 | 120 / 100 / 96 |
+
+La primera y la última vela coinciden en los tres TF. **Decisión:
+`snapshot_autocapture.py` puede seguir usando `scan-batch`**. Que el
+endpoint sea distinto no explica ninguna divergencia con el navegador. El
+hueco real sigue siendo `computeIndicators()` (punto 2), no la fuente de
+velas.
+
+Alcance (no ampliar sin verificar): un solo ticker (AAPL); solo se
+compararon la primera vela, la última y n, **no vela a vela**; con el
+**mercado cerrado** (no se vio la vela parcial en sesión). Pendiente para
+cerrarlo del todo: diff completo de `data` en ≥2 tickers más, repetir con
+el mercado abierto y, con `scan-batch` multiticker, no fiarse de
+`results[0]`: emparejar cada resultado por su ticker.
+
 **Dos gaps adicionales, ya señalados, sin cambios por este paso:**
 de dónde salen `entry_price`/`stop_price`/`risk_per_share` para
 `construir_payload_snapshot()` (no están en el shape de
