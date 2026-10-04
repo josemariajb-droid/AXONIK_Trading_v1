@@ -692,19 +692,60 @@ sobre candles reales, con un shape de resultado coherente — **no** es
 todavía una comparación contra un resultado real del navegador, eso
 sigue pendiente (ver abajo).
 
+**Decisión de contrato (05/10/2026, del usuario): candles en bruto.**
+`POST /api/evaluate-ticker` recibe `candles` (el `data` tal cual lo
+devuelve `scan_batch()`) y calcula `ind` él mismo con `build_ind()` —
+un único camino de cálculo, nunca reimplementado ni en el endpoint ni
+en `snapshot_autocapture.py`. Se mantiene `ind` ya calculado como
+alternativa explícita, mutuamente excluyente con `candles` (422 si
+llegan los dos o ninguno — `resolve_ind()` en
+`evaluate_ticker_endpoint.py`).
+
+**Hallazgo al escribir las pruebas, no al razonar sobre ello: NaN no es
+JSON válido en ninguna dirección.** La primera versión de este
+documento (y del propio `evaluate_ticker_endpoint.py`) afirmaba, sin
+haberlo probado contra una app FastAPI real, que la `JSONResponse` por
+defecto de FastAPI servía `NaN` sin problema. **Era falso** — Starlette
+usa `allow_nan=False` y lanza `ValueError` al intentar servir un NaN
+(confirmado con fastapi 0.141.1 real y `TestClient`, no una suposición
+esta vez). Lo mismo pasa al RECIBIR un NaN crudo en el body (httpx lo
+rechaza igual). Solución: `evaluate_ticker_logic.nan_to_json_sentinel()`/
+`sentinel_to_nan()` — NaN se sirve y se envía como el string explícito
+`"NaN"` (mismo convenio que ya usaban los fixtures de Node), en las dos
+direcciones, con una única implementación compartida por el endpoint,
+`snapshot_autocapture.py` y las pruebas.
+
+**`evaluate_ticker_endpoint.py` rediseñado para ser importable y
+testeable sin `NameError`** (el problema real de la versión anterior,
+que tenía `@app.post(...)` como decorador de módulo con `app` sin
+definir — importarlo para probarlo fallaba antes de ejecutar nada). La
+función queda sin decorador en el repo; el decorador se añade a mano
+al pegarlo en `market_data_proxy.py` (única pieza que de verdad
+pertenece solo al archivo real). Imports listados explícitamente en su
+docstring.
+
+**Probado contra una app FastAPI real** (`test_evaluate_ticker_endpoint.py`,
+9 pruebas): el endpoint con `candles` da exactamente el mismo resultado
+que `build_ind()` + `evaluate_ticker()` llamados directo; la ruta `ind`
+da lo mismo que la ruta `candles`; 422 si llegan los dos o ninguno; el
+NaN sobrevive el round-trip HTTP completo vía el sentinela. Total de la
+suite en `services/snapshot-autocapture/`: **131 pruebas, todas pasan**.
+
+**`VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` actualizada** al contrato de
+`candles`: el Paso B envía el `data` en bruto de `scan-batch`
+directamente; el Paso C, en el navegador, calcula `ind` con el propio
+`computeIndicators()` del navegador sobre esas mismas velas antes de
+llamar a `evaluateTicker()` — los dos lados parten de datos idénticos
+y cada uno calcula `ind` con su propia implementación, la comparación
+más completa posible.
+
 **Lo que falta, explícitamente, antes de poder cerrar el paso 3:**
-1. Decidir el contrato de `POST /api/evaluate-ticker`: ¿recibe `ind` ya
-   calculado (como hoy, obligando al cliente a portar
-   `computeIndicators` también) o recibe `candles` en bruto y calcula
-   `ind` él mismo con `build_ind()` (single source of truth real, sin
-   que el cliente necesite saber nada de indicadores)? No decidido
-   todavía — `evaluate_ticker_endpoint.py` sigue con el contrato
-   antiguo (`ind` ya calculado), ahora desalineado con lo que de verdad
-   produce `scan_batch()`.
-2. Repetir `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con el endpoint
-   actualizado — la comparación real contra `evaluateTicker()` del
-   navegador sigue sin hacerse con el gap de `computeIndicators()` ya
-   cerrado.
+1. Aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py` real
+   (Paso 1b del README — código y contrato ya confirmados y probados,
+   falta pegarlo).
+2. Ejecutar `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` contra el servidor
+   real — la comparación real contra `evaluateTicker()` del navegador
+   sigue sin hacerse.
 3. Nada de esto se ha desplegado — instrucción explícita del usuario.
 
 **Matiz al punto 1 (04/10/2026): `scan-data` y `scan-batch` devuelven las

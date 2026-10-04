@@ -15,9 +15,17 @@ aproximación, una igualdad campo a campo.
 ## Requisito previo
 
 El patch de `evaluate_ticker_endpoint.py` ya aplicado a
-`market_data_proxy.py` (ver docstring de ese archivo — dónde pegarlo) y
-`evaluate_ticker_logic.py` copiado a `/opt/axonik/scripts/`, con
+`market_data_proxy.py` (ver docstring de ese archivo — dónde y cómo
+pegarlo, incluidos los imports exactos) y `evaluate_ticker_logic.py` +
+`indicator_calc.py` copiados a `/opt/axonik/scripts/`, con
 `axonik-market-proxy` reiniciado.
+
+**Contrato actualizado (05/10/2026):** el endpoint ya no recibe `ind`
+precalculado como camino normal — recibe `candles` en bruto (el `data`
+tal cual lo devuelve `scan_batch()`) y calcula `ind` él mismo con
+`build_ind()`. `ind` sigue existiendo como alternativa explícita
+(mutuamente excluyente con `candles`, 422 si llegan los dos o ninguno),
+pero el Paso B de abajo usa el camino normal: `candles`.
 
 ## Paso A — congelar los datos de entrada de un ticker real
 
@@ -28,28 +36,30 @@ curl -s -X POST http://127.0.0.1:8002/api/scan-batch \
 
 # Extraer el campo "data" del resultado de AAPL (emparejado por ticker,
 # no por índice [0] -- con una sola petición da igual, pero es el mismo
-# criterio que ya debe seguir snapshot_autocapture.py con 17 tickers):
+# criterio que ya debe seguir snapshot_autocapture.py con 17 tickers).
+# Esto son candles/periods EN BRUTO, no "ind" calculado -- lo que el
+# endpoint espera ahora en el campo "candles".
 python3 -c "
 import json
 r = json.load(open('/tmp/aapl_scanbatch.json'))
 item = next(i for i in r['results'] if i['ticker'] == 'AAPL')
-json.dump(item['data'], open('/tmp/aapl_ind.json','w'), indent=2)
+json.dump(item['data'], open('/tmp/aapl_candles.json','w'), indent=2)
 "
-cat /tmp/aapl_ind.json
+cat /tmp/aapl_candles.json
 ```
 
 Si `AAPL` no está en ese momento en una franja horaria con datos completos
 (1d/1h/15m), probar con otro de los 17 tickers ya poblados en
 `14_UNIVERSO_TICKERS`.
 
-## Paso B — llamar al endpoint nuevo con esos datos exactos
+## Paso B — llamar al endpoint nuevo con esos datos exactos (candles en bruto)
 
 ```bash
 python3 -c "
 import json
-ind = json.load(open('/tmp/aapl_ind.json'))
+candles = json.load(open('/tmp/aapl_candles.json'))
 payload = {
-    'ticker': 'AAPL', 'mode': 'NYSE', 'ind': ind, 'funda': None,
+    'ticker': 'AAPL', 'mode': 'NYSE', 'candles': candles, 'funda': None,
     'settings': {'priceMin': 8, 'atrMax': 4, 'rvolMin': 1},
     'btc_gate_on': False, 'insider_summary': None,
 }
@@ -57,7 +67,23 @@ json.dump(payload, open('/tmp/aapl_request.json','w'))
 "
 curl -s -X POST http://127.0.0.1:8002/api/evaluate-ticker \
   -H 'Content-Type: application/json' \
-  -d @/tmp/aapl_request.json | python3 -m json.tool > /tmp/aapl_endpoint.json
+  -d @/tmp/aapl_request.json -o /tmp/aapl_endpoint_raw.json
+
+# El endpoint sirve NaN como el string sentinela "NaN" (NaN no es JSON
+# válido -- ver evaluate_ticker_endpoint.py); el navegador, en cambio,
+# serializa NaN como null vía JSON.stringify (comportamiento nativo de
+# JS). Se normalizan los dos a null aquí para que el Paso D pueda
+# comparar el JSON completo, no solo el resumen.
+python3 -c "
+import json
+def sentinel_a_null(o):
+    if o == 'NaN': return None
+    if isinstance(o, dict): return {k: sentinel_a_null(v) for k, v in o.items()}
+    if isinstance(o, list): return [sentinel_a_null(v) for v in o]
+    return o
+r = json.load(open('/tmp/aapl_endpoint_raw.json'))
+json.dump(sentinel_a_null(r), open('/tmp/aapl_endpoint.json','w'), indent=2)
+"
 cat /tmp/aapl_endpoint.json
 ```
 
@@ -73,10 +99,19 @@ cat /tmp/aapl_endpoint.json
    Si difiere de `{priceMin:8, atrMax:4, rvolMin:1}`, **repetir el Paso B**
    con esos mismos valores — la comparación solo es válida si ambos lados
    usan el mismo `settings`.
-3. Pegar el contenido de `/tmp/aapl_ind.json` como `ind` y llamar a la
-   función real tal cual:
+3. Pegar el contenido de `/tmp/aapl_candles.json` como `data` y calcular
+   `ind` con `computeIndicators()` **del propio navegador**, igual que
+   hace `fetchNyseTicker()` (Pregunta 8) — así los dos lados (navegador
+   y endpoint) parten de las mismas velas en bruto y cada uno calcula
+   `ind` con su propia implementación, la comparación más completa
+   posible:
    ```js
-   const ind = /* pegar aquí el JSON de /tmp/aapl_ind.json */;
+   const data = /* pegar aquí el JSON de /tmp/aapl_candles.json */;
+   const ind = {};
+   for (const tf of ['1d','1h','15m']) {
+     const tfData = data[tf];
+     ind[tf] = (tfData && tfData.candles && !tfData.error) ? computeIndicators(tfData.candles, tf) : null;
+   }
    const r = evaluateTicker('AAPL', ind, null, 'NYSE', state.settings, false, null);
    console.log(JSON.stringify(r, null, 2));
    copy(JSON.stringify(r, null, 2));  // Chrome/Firefox: copia al portapapeles

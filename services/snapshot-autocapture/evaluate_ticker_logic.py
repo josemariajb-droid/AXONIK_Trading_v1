@@ -470,6 +470,39 @@ def build_ind(data: dict) -> dict:
     return ind
 
 
+def nan_to_json_sentinel(obj: Any) -> Any:
+    """
+    NaN no es JSON válido (RFC 8259) -- Starlette/FastAPI serializan
+    con `allow_nan=False` y lanzan ValueError en vez de emitir el
+    literal no estándar `NaN` (confirmado con una app FastAPI real en
+    test_evaluate_ticker_endpoint.py, no solo supuesto). Se serializa
+    como el string explícito "NaN" en su lugar -- mismo convenio ya
+    usado en los fixtures de docs/pipeline/fixtures_js/ (generados por
+    el driver de Node). sentinel_to_nan() es la conversión inversa.
+    Única implementación -- la usan evaluate_ticker_endpoint.py (al
+    servir la respuesta) y snapshot_autocapture.py (al leerla), para
+    no reimplementar la misma conversión dos veces.
+    """
+    if isinstance(obj, float) and math.isnan(obj):
+        return "NaN"
+    if isinstance(obj, dict):
+        return {k: nan_to_json_sentinel(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [nan_to_json_sentinel(v) for v in obj]
+    return obj
+
+
+def sentinel_to_nan(obj: Any) -> Any:
+    """Inversa de nan_to_json_sentinel()."""
+    if obj == "NaN":
+        return float("nan")
+    if isinstance(obj, dict):
+        return {k: sentinel_to_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sentinel_to_nan(v) for v in obj]
+    return obj
+
+
 def evaluate_ticker(ticker: str, ind: dict, funda: Optional[dict], mode: str,
                      settings: dict, btc_gate_on: bool,
                      insider_summary: Optional[dict]) -> Optional[dict]:

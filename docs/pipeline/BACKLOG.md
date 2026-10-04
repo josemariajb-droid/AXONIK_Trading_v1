@@ -333,12 +333,35 @@ Abreviatura usada: **DOC-IDEM** =
     (`build_ind` → `evaluate_ticker` → `detect_auto_trigger`) sobre los
     3 fixtures reales sin excepciones. Total de la suite:
     **122 pruebas, todas pasan**.
+  - **Contrato decidido (05/10/2026, del usuario): `candles` en bruto.**
+    `POST /api/evaluate-ticker` recibe el `data` tal cual de
+    `scan_batch()` y calcula `ind` con `build_ind()` — único camino de
+    cálculo. `ind` ya calculado sigue como alternativa explícita,
+    mutuamente excluyente (422 si llegan los dos o ninguno).
+    `evaluate_ticker_endpoint.py` rediseñado para ser importable y
+    testeable sin `NameError` (el problema real de la versión
+    anterior: `@app.post(...)` como decorador de módulo con `app` sin
+    definir). **Hallazgo al probarlo, no al suponerlo: NaN no es JSON
+    válido en ninguna dirección** — Starlette usa `allow_nan=False` y
+    lanza `ValueError` al servir NaN (confirmado con fastapi 0.141.1
+    real, no supuesto); lo mismo al recibirlo. Resuelto con
+    `nan_to_json_sentinel()`/`sentinel_to_nan()` (string `"NaN"`
+    explícito, única implementación compartida por endpoint,
+    `snapshot_autocapture.py` y pruebas). `snapshot_autocapture.py`
+    actualizado para enviar `candles` (ya no `ind` con el `data` crudo
+    mal etiquetado — ese era el bug real detrás del primer `KeyError`).
+    **131 pruebas en total, todas pasan** (9 nuevas contra una app
+    FastAPI real con `TestClient`, confirmando candles≡ind-ya-calculado,
+    los 422, y el NaN sobreviviendo el round-trip HTTP).
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` actualizada al contrato
+    nuevo (Paso B envía `candles`; Paso C calcula `ind` con el propio
+    `computeIndicators()` del navegador antes de llamar a
+    `evaluateTicker()`).
   - **Sin desplegar nada** (instrucción explícita del usuario). Queda
-    pendiente, antes de cerrar el paso 3: (a) decidir el contrato de
-    `POST /api/evaluate-ticker` (¿`ind` ya calculado como hoy, o
-    `candles` en bruto + `build_ind()` server-side?); (b) repetir
-    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con el endpoint actualizado
-    al contrato que se decida.
+    pendiente, antes de cerrar el paso 3: (a) aplicar
+    `evaluate_ticker_endpoint.py` a `market_data_proxy.py` real (Paso
+    1b del README); (b) ejecutar `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`
+    contra el servidor real.
   - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
     de `results[0]`.** `main()` ya empareja cada resultado de
     `/api/scan-batch` por `item.get("ticker")` contra

@@ -261,29 +261,32 @@ def fetch_scan_batch(universo: list[TickerUniverseEntry]) -> dict:
 def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
     """
     Llama a POST /api/evaluate-ticker (decisión de arquitectura
-    04/10/2026: single source of truth server-side con
-    evaluate_ticker_logic.py — ese mismo módulo define el shape de
-    respuesta esperado, listo para pasar directo a
-    evaluate_ticker_logic.detect_auto_trigger()).
+    04/10/2026, actualizada 05/10/2026: el endpoint recibe `candles` en
+    bruto -- el "data" tal cual lo devuelve /api/scan-batch -- y calcula
+    "ind" él mismo con build_ind()/indicator_calc.py, single source of
+    truth server-side. Este script ya NO envía "ind" (ese era
+    precisamente el bug que reveló el primer KeyError 'price' de la
+    verificación navegador-vs-endpoint: `data` son candles en bruto,
+    nunca indicadores ya calculados).
 
     GAP REAL que sigue abierto, no resuelto por este cambio: el endpoint
-    todavía no existe en market_data_proxy.py (ver cabecera del archivo
-    y evaluate_ticker_endpoint.py) — esta llamada falla con 404 contra
-    el proxy real hasta que se aplique. `funda`/`insider_summary` van
-    como None a propósito: no se porta aquí /api/fundamentals-batch ni
-    una fuente de insider score, fuera del alcance de este paso — con
-    funda=None, ST-11 sale N/A y ST-01 pierde sus 2 puntos de bonus de
-    fundamentales, nada más (evaluate_ticker_logic ya lo maneja sin
-    fallar). `btc_gate_on=False` es irrelevante hoy: CRYPTO está
-    excluido de esta ventana (EXCLUDED_MARKETS), así que solo se evalúan
-    tickers NYSE, donde ese flag no se usa.
+    todavía no existe en market_data_proxy.py (ver evaluate_ticker_endpoint.py)
+    — esta llamada falla con 404 contra el proxy real hasta que se
+    aplique. `funda`/`insider_summary` van como None a propósito: no se
+    porta aquí /api/fundamentals-batch ni una fuente de insider score,
+    fuera del alcance de este paso — con funda=None, ST-11 sale N/A y
+    ST-01 pierde sus 2 puntos de bonus de fundamentales, nada más
+    (evaluate_ticker_logic ya lo maneja sin fallar). `btc_gate_on=False`
+    es irrelevante hoy: CRYPTO está excluido de esta ventana
+    (EXCLUDED_MARKETS), así que solo se evalúan tickers NYSE, donde ese
+    flag no se usa.
     """
     resp = requests.post(
         f"{PROXY_BASE}/api/evaluate-ticker",
         json={
             "ticker": ticker,
             "mode": mercado,
-            "ind": data,
+            "candles": data,
             "funda": None,
             "settings": SETTINGS,
             "btc_gate_on": False,
@@ -292,7 +295,12 @@ def evaluate_ticker(ticker: str, data: dict, mercado: str) -> dict:
         timeout=15,
     )
     resp.raise_for_status()
-    return resp.json()
+    # NaN no es JSON válido -- el endpoint lo sirve como el string
+    # sentinela "NaN" (etl.nan_to_json_sentinel, ver
+    # evaluate_ticker_endpoint.py; probado contra una app FastAPI real).
+    # sentinel_to_nan() es la conversión inversa, misma función que usan
+    # las pruebas -- no una segunda implementación de esto.
+    return etl.sentinel_to_nan(resp.json())
 
 
 def construir_payload_snapshot(ticker: str, evaluation: dict, trigger: dict,

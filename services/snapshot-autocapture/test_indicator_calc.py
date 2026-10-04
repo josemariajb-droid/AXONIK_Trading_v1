@@ -9,7 +9,10 @@ re-implementación en otro lenguaje de lo que "debería" devolver.
 
 "NaN" llega como string explícito en los fixtures (así lo serializa el
 driver de Node, JSON no tiene NaN nativo) -- se convierte a
-float('nan') al cargar, y se compara con math.isnan(), nunca con `==`
+float('nan') al cargar con evaluate_ticker_logic.sentinel_to_nan()
+(misma función que usan evaluate_ticker_endpoint.py y
+snapshot_autocapture.py para lo mismo -- no una segunda
+implementación), y se compara con math.isnan(), nunca con `==`
 (NaN != NaN en IEEE754, en Python y en JS por igual).
 """
 from __future__ import annotations
@@ -20,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+import evaluate_ticker_logic as etl
 import indicator_calc as calc
 
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "docs" / "pipeline" / "fixtures_js"
@@ -28,26 +32,13 @@ TIMEFRAMES = ["1d", "1h", "15m"]
 REL_TOL = 1e-9
 
 
-def _nan_sentinel_to_float(obj):
-    """Recorre recursivamente una estructura JSON y convierte el string
-    sentinela "NaN" (así lo escribe el driver de Node, ver
-    generar_fixtures_js.sh) a float('nan') real."""
-    if obj == "NaN":
-        return float("nan")
-    if isinstance(obj, dict):
-        return {k: _nan_sentinel_to_float(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_nan_sentinel_to_float(v) for v in obj]
-    return obj
-
-
 def load_fixture(ticker: str, tf: str) -> tuple[list[dict], dict]:
     candles_path = FIXTURES_DIR / f"{ticker}_{tf}_candles.json"
     output_path = FIXTURES_DIR / f"{ticker}_{tf}_output.json"
     with open(candles_path) as f:
         candles = json.load(f)
     with open(output_path) as f:
-        output = _nan_sentinel_to_float(json.load(f))
+        output = etl.sentinel_to_nan(json.load(f))
     return candles, output
 
 
