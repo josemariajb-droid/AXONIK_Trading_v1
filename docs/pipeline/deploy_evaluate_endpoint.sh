@@ -22,10 +22,17 @@
 #      market_data_proxy.py.
 #   b) Backup con timestamp + sha256 de market_data_proxy.py.
 #   c) Quitar el bloque del endpoint (desde `class
-#      EvaluateTickerRequest` hasta antes de `# ─── Learning Engine`,
-#      el marcador real que viene después en el archivo) y pegar el
-#      nuevo, con el decorador @app.post incluido. Si los marcadores no
-#      aparecen exactamente como se espera, ABORTA SIN CAMBIOS.
+#      EvaluateTickerRequest` hasta antes de
+#      `# ─── Learning Engine: signal_snapshots endpoints`) y pegar el
+#      nuevo, con el decorador @app.post incluido. El marcador de
+#      cierre tiene que ser ese texto completo -- "Learning Engine" a
+#      secas aparece DOS veces en el archivo real (línea ~523, sección
+#      de Postgres, y línea ~1016, la de signal_snapshots endpoints;
+#      dos secciones legítimas distintas, confirmado tras un aborto
+#      real de una versión anterior de este script con un marcador
+#      demasiado corto). Si el marcador de inicio aparece más de una
+#      vez, o el de cierre no aparece EXACTAMENTE una vez, o el de
+#      inicio va después del de cierre: ABORTA SIN CAMBIOS.
 #   d) Comprobar que la cabecera tiene los imports que el parche usa
 #      (json, Optional, Response, HTTPException, BaseModel,
 #      evaluate_ticker_logic) y añadir los que falten sin duplicar.
@@ -147,8 +154,16 @@ new_block = (
 )
 
 # --- Localizar los marcadores en el proxy real ---
+# El marcador de cierre tiene que ser el texto completo y único de esa
+# cabecera -- "# ─── Learning Engine" a secas aparece DOS veces en el
+# archivo real (confirmado por el usuario tras un aborto real de este
+# script: línea ~523 "Learning Engine: Postgres access
+# (signal_snapshots)" y línea ~1016 "Learning Engine: signal_snapshots
+# endpoints" -- dos secciones legítimas distintas, no un error del
+# archivo). Solo la segunda es el límite real del bloque a reemplazar.
 start_pat = re.compile(r"^class EvaluateTickerRequest\b.*$", re.M)
-end_pat = re.compile(r"^#\s*─+\s*Learning Engine\b.*$", re.M)
+end_marker_text = "Learning Engine: signal_snapshots endpoints"
+end_pat = re.compile(r"^#\s*─+\s*" + re.escape(end_marker_text) + r"\b.*$", re.M)
 
 start_matches = list(start_pat.finditer(proxy))
 end_matches = list(end_pat.finditer(proxy))
@@ -158,17 +173,21 @@ if len(start_matches) > 1:
           f"ambiguo, abortando sin cambios.", file=sys.stderr)
     sys.exit(1)
 if len(end_matches) != 1:
-    print(f"ERROR: el marcador '# ─── Learning Engine' aparece {len(end_matches)} veces "
+    print(f"ERROR: el marcador '# ─── {end_marker_text}' aparece {len(end_matches)} veces "
           f"(se esperaba exactamente 1) -- abortando sin cambios.", file=sys.stderr)
     sys.exit(1)
 
 end_idx = end_matches[0].start()
 
+# Marcador de inicio: a lo sumo 1 aparición (ya comprobado arriba) Y,
+# si existe, tiene que ir ANTES del de cierre -- si no, el archivo no
+# tiene la forma esperada y no se toca nada.
 if start_matches:
     start_idx = start_matches[0].start()
     if start_idx > end_idx:
-        print("ERROR: 'class EvaluateTickerRequest' aparece DESPUÉS del marcador de "
-              "Learning Engine -- orden inesperado, abortando sin cambios.", file=sys.stderr)
+        print(f"ERROR: 'class EvaluateTickerRequest' (línea con offset {start_idx}) aparece "
+              f"DESPUÉS del marcador '# ─── {end_marker_text}' (offset {end_idx}) -- orden "
+              f"inesperado, abortando sin cambios.", file=sys.stderr)
         sys.exit(1)
     before, after = proxy[:start_idx], proxy[end_idx:]
     action = "bloque existente reemplazado (idempotente)"

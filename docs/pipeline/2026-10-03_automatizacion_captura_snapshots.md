@@ -766,6 +766,25 @@ roto (simulando el incidente real del `NameError` de `Optional`), dos
 ejecuciones idempotentes seguidas sin duplicar la ruta, y el rollback
 forzado deliberadamente (restaura el backup exacto, sin diferencias).
 
+**Primer intento real contra el servidor: abortó correctamente, sin
+tocar nada — por una razón real que la sintética no cubría.** El
+marcador de cierre `# ─── Learning Engine` (a secas) aparece **dos
+veces** en `market_data_proxy.py` real: línea ~523 ("Learning Engine:
+Postgres access (signal_snapshots)") y línea ~1016 ("Learning Engine:
+signal_snapshots endpoints") — dos secciones legítimas distintas, no
+un error del archivo. El marcador se corrigió al texto completo y
+único `# ─── Learning Engine: signal_snapshots endpoints`, y se probó
+de nuevo contra una fixture que replica esa estructura exacta (dos
+cabeceras "Learning Engine" + `class EvaluateTickerRequest` en la
+posición real reportada por el usuario) — de punta a punta contra una
+app FastAPI real: ignora la cabecera de Postgres, usa solo la de
+`signal_snapshots endpoints` como límite, y reemplaza el bloque sin
+tocar `class SnapshotCreateRequest` que viene justo después. Además,
+abortos confirmados contra esta misma estructura realista: marcador de
+cierre duplicado, y `class EvaluateTickerRequest` apareciendo después
+del marcador de cierre (orden inesperado) — los dos sin modificar el
+archivo.
+
 **Lo que falta, explícitamente, antes de poder cerrar el paso 3:**
 1. Ejecutar `docs/pipeline/deploy_evaluate_endpoint.sh` contra el
    servidor real (Paso 1b del README — código, contrato y script ya

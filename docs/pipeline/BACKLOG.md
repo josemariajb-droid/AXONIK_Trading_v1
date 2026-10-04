@@ -371,6 +371,16 @@ Abreviatura usada: **DOC-IDEM** =
     reemplazo de un bloque viejo roto (simulando el incidente real del
     `NameError` de `Optional`), dos ejecuciones idempotentes seguidas,
     y el rollback forzado deliberadamente (restaura el backup exacto).
+  - **Primer intento real abortó correctamente, sin cambios — por un
+    motivo real no cubierto por la fixture sintética.** El marcador
+    `# ─── Learning Engine` a secas aparece 2 veces en el proxy real
+    (Postgres y `signal_snapshots endpoints`, dos secciones legítimas).
+    Corregido al texto completo `# ─── Learning Engine: signal_snapshots
+    endpoints`, re-probado contra una fixture con la estructura exacta
+    reportada (dos cabeceras + `EvaluateTickerRequest` en su posición
+    real) — ignora la de Postgres, reemplaza bien el bloque sin tocar
+    `SnapshotCreateRequest`, y aborta sin cambios si el marcador de
+    cierre se duplica o si el de inicio queda después del de cierre.
   - **Sin desplegar nada** (instrucción explícita del usuario). Queda
     pendiente, antes de cerrar el paso 3: (a) ejecutar
     `docs/pipeline/deploy_evaluate_endpoint.sh` contra el servidor real
