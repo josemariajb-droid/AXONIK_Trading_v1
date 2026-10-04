@@ -457,16 +457,28 @@ Abreviatura usada: **DOC-IDEM** =
     `ESTADO` distinto de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito**
     (instrucción explícita del usuario) hasta que esa verificación pase
     — no se ha tocado la hoja ni se ha creado ningún timer cripto.
-  - **Estado (07/10/2026): verificación real ejecutada por el usuario —
-    3/3 PASA, Gate BTC OFF (real).** `computeMarketContext()` SÍ se pudo
-    extraer y ejecutar de verdad contra el servidor (`verificar_cripto.sh`
-    ya no degradó el gate) — pero el texto literal extraído no se ha
-    pegado en esta sesión, así que `compute_btc_gate()` en
-    `snapshot_autocapture.py` **sigue siendo el sustituto temporal**
-    (fuerza `False`) — coincide con el resultado real de hoy por
-    casualidad de mercado, no porque ya esté portado. Bloqueo 1 de
-    `BLOQUEOS.md` actualizado con este matiz, sigue abierto hasta pegar
-    el texto literal de `computeMarketContext()`.
+  - **Estado (07/10/2026): Pregunta 11 pegada (`pregunta11_salida.txt`)
+    — `computeMarketContext()`/`BINANCE_BASE` confirmados y PORTADOS DE
+    VERDAD.** `gateOn = BTC.price > BTC.ema50` (1D) — confirma
+    literalmente la regla del proyecto ("BTC < EMA50 diaria = cero
+    longs"). `compute_btc_gate()` ya no es un sustituto que fuerza
+    `False` — calcula el valor real. `BINANCE_BASE` real:
+    `https://data-api.binance.vision` (NO `api.binance.com`, corregido).
+  - **Bug real encontrado al validar esto: el "3/3 PASA, Gate BTC OFF
+    (real)" reportado antes era, en parte, un FALSO POSITIVO.**
+    `verificar_cripto.sh` extraía `computeMarketContext()` sola, sin sus
+    4 dependencias (`fetchCryptoTicker`/`fetchBinanceKlines`/`sleep`/
+    `BINANCE_BASE`) — `computeMarketContext()` lanzaba internamente
+    `ReferenceError: fetchCryptoTicker is not defined`, silenciado por su
+    propio `catch(e){return null}` real, indistinguible desde fuera de
+    un `gateOn:false` genuino. Corregido extrayendo las 5 piezas juntas;
+    probado con un mock de Binance que `computeMarketContext()` ya
+    ejecuta de verdad sin reventar. El puerto Python, corrido contra las
+    velas de BTC que ese mismo run comiteó, da `price > ema50` ->
+    **gate ON** — lo contrario del "OFF" reportado con el bug. **Hace
+    falta re-ejecutar `docs/pipeline/verificar_cripto.sh` (ya corregido)
+    contra el servidor real para tener un valor de gate fiable** —
+    detalle completo en `docs/pipeline/BLOQUEOS.md`, bloqueo 1.
   - **Desviación consciente añadida (07/10/2026, instrucción explícita
     del usuario):** el gate BTC se aplica en la CAPA DE CAPTURA
     (`_evaluar_y_capturar()`) a TODOS los longs cripto, **incluido

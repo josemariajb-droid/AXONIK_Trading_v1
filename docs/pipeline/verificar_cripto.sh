@@ -61,7 +61,7 @@
 set -uo pipefail  # sin -e: el script decide explícitamente cuándo abortar
 
 SCANNER_HTML="${SCANNER_HTML:-/opt/axonik/scanner/index.html}"
-BINANCE_BASE="${BINANCE_BASE:-https://api.binance.com}"
+BINANCE_BASE="${BINANCE_BASE:-https://data-api.binance.vision}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PY_DIR="${PY_DIR:-$REPO_ROOT/services/snapshot-autocapture}"
@@ -215,21 +215,46 @@ if ! node --check "$EXTRACTED_JS" >>"$REPORT_FULL" 2>&1; then
 fi
 log_full "OK: $EXTRACTED_JS parsea como JS válido (32/32 piezas obligatorias)."
 
-# computeMarketContext: OPCIONAL -- sin línea conocida (nunca se ha
-# confirmado, Pregunta 11 pendiente). Si no se encuentra/es ambiguo, NO
-# aborta: degrada el gate a OFF más abajo, con aviso.
+# computeMarketContext() llama a fetchCryptoTicker('BTC'), que llama a
+# fetchBinanceKlines() + computeIndicators() (ya cargado, uno de los 32) --
+# fetchCryptoTicker/fetchBinanceKlines/sleep/BINANCE_BASE NUNCA estaban en
+# el contexto de Node de computeGate() en la primera versión de este
+# script: computeMarketContext() lanzaba un ReferenceError interno,
+# SILENCIADO por su propio catch(e){return null} real -- de fuera se veía
+# idéntico a "real:true, gateOn:false" (un resultado real de mercado),
+# cuando en realidad era un fallo de extracción enmascarado. Corregido:
+# se concatenan las 5 piezas que computeMarketContext() necesita de
+# verdad para poder ejecutarse sin reventar por una dependencia ausente.
+# Líneas reales confirmadas (Pregunta 11): BINANCE_BASE=1336,
+# fetchBinanceKlines=1338, fetchCryptoTicker=1356, computeMarketContext=1384;
+# sleep=707 (Pregunta 8). Igual que las 32 piezas obligatorias en ancla,
+# pero el conjunto entero sigue siendo OPCIONAL (abort_on_fail=0): si
+# cualquiera de las 5 falta o es ambigua, NO aborta el script -- degrada
+# el gate a OFF con aviso, nunca deja un ReferenceError sin nombrar.
 GATE_JS="$OUT_DIR/compute_market_context_extracted.js"
 GATE_REAL_DISPONIBLE=0
-if extract_js_def_or_fail "$SCANNER_HTML" "computeMarketContext" 300 0 > "$GATE_JS" 2>/dev/null \
-   && node --check "$GATE_JS" >/dev/null 2>&1; then
+GATE_TMP="$OUT_DIR/_gate_pieces.js"
+: > "$GATE_TMP"
+GATE_PIECES_OK=1
+for spec in "BINANCE_BASE:1336" "sleep:707" "fetchBinanceKlines:1338" "fetchCryptoTicker:1356" "computeMarketContext:1384"; do
+    name="${spec%%:*}"; known_line="${spec##*:}"
+    if ! extract_js_def_anchored "$SCANNER_HTML" "$name" "$known_line" 300 0 >> "$GATE_TMP" 2>/dev/null; then
+        log_full "AVISO: no se pudo extraer '$name' (dependencia de computeMarketContext() --"
+        log_full "  ver docs/pipeline/BLOQUEOS.md) -- el gate BTC se degrada a OFF para esta"
+        log_full "  verificación, EN LOS DOS LADOS (Node y Python), para comparar la aritmética"
+        log_full "  de scoring, no el gate en sí."
+        GATE_PIECES_OK=0
+        break
+    fi
+    echo >> "$GATE_TMP"
+done
+if [[ "$GATE_PIECES_OK" -eq 1 ]] && node --check "$GATE_TMP" >/dev/null 2>&1; then
+    mv "$GATE_TMP" "$GATE_JS"
     GATE_REAL_DISPONIBLE=1
-    log_full "OK: computeMarketContext() encontrado y parsea -- se intentará ejecutar de verdad."
+    log_full "OK: computeMarketContext() y sus 4 dependencias encontradas y parsean -- se intentará"
+    log_full "  ejecutar de verdad (no un sustituto)."
 else
-    log_full "AVISO: computeMarketContext() no encontrado o ambiguo en $SCANNER_HTML (Pregunta 11 de"
-    log_full "  check_autocapture_triggers.sh sigue pendiente, ver docs/pipeline/BLOQUEOS.md) --"
-    log_full "  el gate BTC se degrada a OFF (False) para esta verificación, EN LOS DOS LADOS"
-    log_full "  (Node y Python), para comparar la aritmética de scoring, no el gate en sí."
-    rm -f "$GATE_JS"
+    rm -f "$GATE_TMP"
 fi
 
 # --- Paso 3: velas reales de Binance para BTC/ETH/SOL -----------------------

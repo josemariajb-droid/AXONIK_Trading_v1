@@ -151,26 +151,77 @@ def test_fetch_crypto_candles_usa_symbol_usdt_y_los_limites_confirmados(monkeypa
 
 # --- compute_btc_gate() -----------------------------------------------------
 
-def test_compute_btc_gate_hoy_siempre_da_false_y_sc02_scpb_salen_na():
-    """
-    Ata el sustituto temporal (ver docs/pipeline/BLOQUEOS.md) a un
-    resultado observable, no solo "devuelve False": con ese valor,
-    evalSC02/evalSCPB deben dar N/A por el gate -- si algún día
-    compute_btc_gate() deja de devolver False sin que se haya portado
-    computeMarketContext(), este test debe fallar y avisar.
-    """
-    import evaluate_ticker_logic as etl
+def _candles_planas_luego(valor_final, n=60):
+    """n-1 velas planas en 100 + una última a `valor_final` -- suficientes
+    para que indicator_calc calcule ema50 real (no NaN) y quede claramente
+    por debajo o por encima según el signo de valor_final-100."""
+    closes = [100.0] * (n - 1) + [valor_final]
+    return [{"t": i, "o": c, "h": c, "l": c, "c": c, "v": 1000.0} for i, c in enumerate(closes)]
 
-    gate = sa.compute_btc_gate()
-    assert gate is False
+
+def test_compute_btc_gate_price_mayor_que_ema50_da_true(monkeypatch):
+    """
+    Pieza real: computeMarketContext() (Pregunta 11, texto literal
+    confirmado 07/10/2026) -- gateOn = BTC.price > BTC.ema50 (1D). Sin
+    red: fetch_binance_klines mockeado, nunca pega a data-api.binance.vision.
+    """
+    monkeypatch.setattr(sa, "fetch_binance_klines",
+                         lambda symbol, interval, limit: _candles_planas_luego(200.0))
+    assert sa.compute_btc_gate() is True
+
+
+def test_compute_btc_gate_price_menor_que_ema50_da_false(monkeypatch):
+    monkeypatch.setattr(sa, "fetch_binance_klines",
+                         lambda symbol, interval, limit: _candles_planas_luego(50.0))
+    assert sa.compute_btc_gate() is False
+
+
+def test_compute_btc_gate_excepcion_da_false_igual_que_catch_del_js():
+    """Mismo catch(e){return null} -> gateOn:false del JS real -- un
+    fallo de red (u otro) nunca debe propagar, solo degradar a OFF."""
+    def boom(*a, **kw):
+        raise ConnectionError("sin red (simulado)")
+
+    with patch.object(sa, "fetch_binance_klines", boom):
+        assert sa.compute_btc_gate() is False
+
+
+def test_compute_btc_gate_pide_solo_velas_1d_de_btc(monkeypatch):
+    """computeMarketContext() real solo lee ind['1d'] -- no debe pedir
+    1h/15m (2 llamadas de Binance que no se usarían para nada)."""
+    llamadas = []
+
+    def fake_klines(symbol, interval, limit):
+        llamadas.append((symbol, interval, limit))
+        return _candles_planas_luego(150.0)
+
+    monkeypatch.setattr(sa, "fetch_binance_klines", fake_klines)
+    sa.compute_btc_gate()
+    assert llamadas == [("BTCUSDT", "1d", sa.BINANCE_KLINE_LIMITS["1d"])]
+
+
+def test_gate_off_real_bloquea_sc02_scpb_via_mkna():
+    """No ata ningún valor fijo de compute_btc_gate() -- solo confirma
+    que, dado gate=False (cualquiera que sea su origen), evalSC02/
+    evalSCPB siguen devolviendo mkNA() por el gate, como ya prueba
+    test_evaluate_ticker_logic_cripto.py con más detalle."""
+    import evaluate_ticker_logic as etl
 
     settings = {"priceMin": 8, "atrMax": 4, "rvolMin": 1}
     r_sc02 = etl.eval_sc02({"ind": {"1d": {}, "1h": {}}, "hardNo": False,
-                             "settings": settings, "ticker": "SOL", "btcGateOn": gate})
+                             "settings": settings, "ticker": "SOL", "btcGateOn": False})
     r_scpb = etl.eval_scpb({"ind": {"1d": {}, "1h": {}, "15m": {}}, "hardNo": False,
-                             "settings": settings, "ticker": "SOL", "btcGateOn": gate})
+                             "settings": settings, "ticker": "SOL", "btcGateOn": False})
     assert r_sc02["naReason"] == "Gate BTC OFF"
     assert r_scpb["naReason"] == "Gate BTC OFF"
+
+
+def test_binance_base_default_es_el_dominio_real_confirmado():
+    """Pregunta 11 (07/10/2026): const BINANCE_BASE =
+    'https://data-api.binance.vision' -- NO api.binance.com. Si esto
+    cambia sin querer, fetch_binance_klines() pediría al dominio
+    equivocado sin que ningún test lo note."""
+    assert sa.BINANCE_BASE == "https://data-api.binance.vision"
 
 
 # --- evaluate_ticker(): btc_gate_on en el payload ---------------------------

@@ -131,6 +131,7 @@ import gspread
 import requests
 
 import evaluate_ticker_logic as etl
+import indicator_calc
 
 # --- Configuración ---------------------------------------------------------
 
@@ -164,15 +165,13 @@ EXCLUDED_MARKETS = {"CRYPTO"}
 # ticker inactivo, así que no hace falta ningún guard adicional aquí: el
 # guard real vive en la hoja, no en este código.
 #
-# BINANCE_BASE: SIN CONFIRMAR contra el texto literal de
-# fetchBinanceKlines() -- solo se ha visto el NOMBRE de la constante
-# dentro de la URL interpolada (Pregunta 9), nunca su valor real (Pregunta
-# 11 de check_autocapture_triggers.sh, pendiente de ejecutar en el
-# servidor -- ver docs/pipeline/BLOQUEOS.md). Se usa el dominio público
-# estándar de Binance como valor por defecto, documentado como SUPUESTO
-# no confirmado -- overridable sin tocar código vía
-# AXONIK_BINANCE_BASE si resulta ser distinto (p.ej. un proxy propio).
-BINANCE_BASE = os.environ.get("AXONIK_BINANCE_BASE", "https://api.binance.com")
+# BINANCE_BASE: CONFIRMADO (Pregunta 11, 07/10/2026,
+# docs/pipeline/pregunta11_salida.txt línea 1428):
+# "const BINANCE_BASE = 'https://data-api.binance.vision';" -- NO es
+# api.binance.com (el dominio público "normal"), es el subdominio de solo
+# datos de mercado de Binance. Overridable sin tocar código vía
+# AXONIK_BINANCE_BASE si hiciera falta (p.ej. un proxy propio).
+BINANCE_BASE = os.environ.get("AXONIK_BINANCE_BASE", "https://data-api.binance.vision")
 # Límites de velas por timeframe: CONFIRMADOS contra fetchCryptoTicker()
 # (Pregunta 9/10) -- 120/100/96, distintos de los de NYSE (que no fija un
 # "limit" explícito, scan-batch decide cuántas velas devuelve).
@@ -382,28 +381,37 @@ def fetch_crypto_candles(ticker: str) -> dict:
 
 def compute_btc_gate() -> bool:
     """
-    SUSTITUTO TEMPORAL de computeMarketContext() (línea sin confirmar --
-    Pregunta 11 de check_autocapture_triggers.sh, pendiente de ejecutar
-    contra el servidor real, ver docs/pipeline/BLOQUEOS.md). Solo se ha
-    confirmado la llamada en runScan(), nunca el cuerpo de
-    computeMarketContext() ni de dónde sale `.gateOn` -- no se adivina esa
-    aritmética aquí.
+    Pieza: computeMarketContext() (línea 1384 del navegador, Pregunta 11
+    -- texto literal confirmado 07/10/2026,
+    docs/pipeline/pregunta11_salida.txt). Puerto de la rama 'CRYPTO' de
+    esa función (la única que usa este script -- la rama 'NYSE' real usa
+    SPY, fuera de alcance aquí):
 
-    Devuelve False (gate OFF) siempre, a propósito: es EXACTAMENTE el
-    mismo valor que ya da el navegador cuando `state.marketContext` sale
-    falsy (`mode==='CRYPTO' ? (state.marketContext ? state.marketContext.gateOn : false) : null`,
-    confirmado literal) -- no una aproximación nueva, la misma rama de
-    "sin contexto de mercado -> gate OFF" que el código real ya tiene.
-    Con el gate OFF, evalSC02/evalSCPB (evaluate_ticker_logic.eval_sc02/
-    eval_scpb) devuelven mkNA() -- ninguna señal long de esas dos puede
-    salir mientras esto no se sustituya por el cálculo real.
+        const ind = await fetchCryptoTicker('BTC');
+        const d = ind['1d'];
+        if (!d) return null;
+        return {... gateOn: d.price > d.ema50, ...};
+
+    gateOn = BTC.price > BTC.ema50 (1D) -- "BTC por debajo de su EMA50
+    diaria apaga el gate", confirmado contra el texto real, no una
+    interpretación. Solo pide las velas 1D de BTC (computeMarketContext
+    real solo lee ind['1d'], nunca 1h/15m) -- evita 2 llamadas de
+    Binance innecesarias por ejecución, que síno se usarían para nada.
+
+    Si algo falla (BTC sin datos, excepción de red): devuelve False --
+    mismo `catch(e){ return null }` -> `state.marketContext` falsy ->
+    `btcGateOn = false` del JS real (runScan()), no una rama nueva.
     """
-    log.warning(
-        "compute_btc_gate(): computeMarketContext() real no está portado "
-        "(ver docs/pipeline/BLOQUEOS.md) -- gate BTC forzado a OFF (False), "
-        "igual que el navegador cuando state.marketContext es falsy."
-    )
-    return False
+    try:
+        candles = fetch_binance_klines("BTCUSDT", "1d", BINANCE_KLINE_LIMITS["1d"])
+        d = indicator_calc.compute_indicators(candles, "1d")
+        if not d:
+            return False
+        return bool(d["price"] > d["ema50"])
+    except Exception:
+        log.exception("compute_btc_gate(): fallo al calcular el gate BTC real -- se trata como "
+                       "OFF, igual que el catch(e){return null} del JS real.")
+        return False
 
 
 def evaluate_ticker(ticker: str, data: dict, mercado: str, btc_gate_on: bool = False) -> dict:

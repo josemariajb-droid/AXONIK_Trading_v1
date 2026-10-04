@@ -1,18 +1,22 @@
 # Runbook — ruta CRIPTO de la captura automática (BTC/ETH/SOL)
 
-**Estado: NO DESPLEGADO. Paso 1 EJECUTADO contra el servidor real
-(07/10/2026) — `3/3 PASA, Gate BTC OFF (real)`.** Paso 2 (dry-run real
-del script) todavía pendiente. BTC/ETH/SOL siguen con `ESTADO` distinto
-de `ACTIVO` en `14_UNIVERSO_TICKERS` a propósito — no tocar la hoja
-hasta el Paso 3 de este documento.
+**Estado: NO DESPLEGADO. Paso 1 EJECUTADO una vez contra el servidor
+real (07/10/2026), pero con un bug que invalida su resultado de gate —
+hace falta RE-EJECUTARLO con el fix.** Paso 2 (dry-run real del script)
+todavía pendiente. BTC/ETH/SOL siguen con `ESTADO` distinto de `ACTIVO`
+en `14_UNIVERSO_TICKERS` a propósito — no tocar la hoja hasta el Paso 3.
 
-**Gate BTC real confirmado ejecutable, pero el puerto Python del gate
-sigue siendo un sustituto temporal** — `computeMarketContext()` se pudo
-extraer y correr de verdad en el servidor (ya no degradó), pero el texto
-literal extraído no se ha pegado en esta sesión todavía, así que
-`compute_btc_gate()` en Python sigue forzando `False` (hoy coincide con
-el valor real por cómo está el mercado, no porque ya esté portado) —
-detalle en `docs/pipeline/BLOQUEOS.md`, bloqueo 1.
+**`computeMarketContext()`/`BINANCE_BASE` ya confirmados y PORTADOS DE
+VERDAD** (Pregunta 11, `docs/pipeline/pregunta11_salida.txt`) —
+`compute_btc_gate()` en Python ya NO es un sustituto, calcula
+`BTC.price > BTC.ema50` (1D) real. **Pero el "3/3 PASA, Gate BTC OFF
+(real)" del primer run estaba inflado por un bug de `verificar_cripto.sh`**
+(extraía `computeMarketContext()` sin sus 4 dependencias, que lanzaba un
+`ReferenceError` silenciado por su propio `catch` real -- parecía un
+resultado de mercado genuino y no lo era). Ya corregido y probado con un
+mock de Binance. Detalle completo en `docs/pipeline/BLOQUEOS.md`,
+bloqueo 1 -- **re-ejecutar el Paso 1 de este runbook es la acción
+pendiente más urgente**, no asumir que el gate sigue OFF.
 
 **Desviación consciente añadida (07/10/2026):** la CAPTURA (no el
 scanner) bloquea TODOS los longs cripto con el gate OFF, incluido SC-01
@@ -59,23 +63,28 @@ pushea el resultado a la rama actual.
   SOL: PASA
   Resultado global: 3/3 PASA
   ```
-- **`Gate BTC: OFF (degradado)` es el resultado esperado hoy** —
-  `computeMarketContext()` nunca se ha extraído del navegador
-  (`docs/pipeline/BLOQUEOS.md`, bloqueo 1). No es un fallo de la
-  verificación: significa que el script no pudo confirmar el gate real,
-  así que compara la aritmética de scoring con el gate forzado a OFF en
-  los dos lados (JS y Python) — una comparación válida de "¿el puerto
-  calcula igual que el JS", pero NO una confirmación de que el gate en
-  sí esté bien portado (no lo está: `compute_btc_gate()` es un sustituto
-  temporal, ver `BLOQUEOS.md`).
-- Si en cambio sale `Gate BTC: ON (real)` u `OFF (real)`: significa que
-  `computeMarketContext()` SÍ se pudo extraer y ejecutar de verdad — **ya
-  ocurrió una vez (07/10/2026, `OFF (real)`)**, pero el texto literal
-  extraído todavía no se pegó en esta sesión. Pegar la salida completa
-  del script (o el fichero
-  `docs/pipeline/fixtures_js/oraculo_cripto/compute_market_context_extracted.js`
-  que queda guardado en esa ejecución) para portar
-  `compute_market_context()` a Python de verdad y cerrar el bloqueo 1.
+- **`Gate BTC: ON (real)` u `OFF (real)` es lo esperado ahora** —
+  `computeMarketContext()` y sus 4 dependencias
+  (`fetchCryptoTicker`/`fetchBinanceKlines`/`sleep`/`BINANCE_BASE`) ya
+  están confirmadas y se extraen juntas (bloqueo 1 de `BLOQUEOS.md`
+  RESUELTO, 07/10/2026) — el gate ya no debería degradar salvo que el
+  navegador haya cambiado desde entonces. `compute_btc_gate()` en Python
+  calcula lo mismo (`BTC.price > BTC.ema50` 1D), no un sustituto.
+- **`Gate BTC: OFF (degradado)` sigue siendo posible** si el navegador
+  cambió (ancla desplazada + búsqueda global ambigua/sin match) — en ese
+  caso compara la aritmética de scoring con el gate forzado a OFF en los
+  dos lados (JS y Python), válido para "¿el puerto calcula igual que el
+  JS", pero NO confirma el gate en sí. Revisar el aviso para saber cuál
+  de las 5 piezas (`computeMarketContext`/`fetchCryptoTicker`/
+  `fetchBinanceKlines`/`sleep`/`BINANCE_BASE`) falló exactamente.
+- **El primer run (07/10/2026) reportó `OFF (real)`, pero tenía un bug
+  real que lo invalida** (`docs/pipeline/BLOQUEOS.md`, bloqueo 1):
+  `computeMarketContext()` se extraía sin sus dependencias y lanzaba un
+  `ReferenceError` silenciado por su propio `catch` -- parecía un
+  resultado de mercado genuino sin serlo. Ya corregido. **No asumir que
+  el gate sigue OFF de aquel run** -- el puerto Python, corrido contra
+  esas mismas velas, da gate ON. Re-ejecutar este Paso 1 para un valor
+  fiable.
 - **Opcional — `FORCE_BTC_GATE_ON=1 docs/pipeline/verificar_cripto.sh`:**
   repite la comparación con `btcGateOn` forzado a `true` en JS y Python,
   mismas velas reales. Es un TEST DE EQUIVALENCIA DE LÓGICA de SC-02/
@@ -129,15 +138,18 @@ python3 snapshot_autocapture.py --market crypto --dry-run
   los logs `[DRY RUN] POST /api/snapshots ...` tengan sentido (precio,
   score, estrategia) — **y volver a poner `ESTADO` como estaba
   inmediatamente después**, no dejarlo en `ACTIVO` desde este paso.
-- Debe verse en el log `Gate BTC: OFF` (viene de `compute_btc_gate()`,
-  el mismo sustituto temporal del Paso 1 — hoy coincide con el valor
-  real confirmado en el Paso 1, pero sigue siendo el sustituto, no el
-  cálculo real) — esperado, no es un fallo.
+- El log debe mostrar `Gate BTC: ON` o `Gate BTC: OFF` -- viene de
+  `compute_btc_gate()`, que ya hace el cálculo real (`BTC.price >
+  BTC.ema50` 1D, Pregunta 11, ya NO un sustituto fijo) pidiendo las
+  velas 1D de BTC a Binance de verdad. No asumir cuál sale sin mirar el
+  log -- depende del mercado real en el momento de ejecutar.
 - **Con el gate OFF, NINGÚN ticker cripto debe capturar nada, aunque su
   trigger sea `AUTO_HIGH`/`AUTO_MULTI` vía SC-01** (desviación consciente
-  de la capa de captura, 07/10/2026 — ver `docs/pipeline/BACKLOG.md`):
-  si se activa `BTC` temporalmente para probar el camino completo y el
-  log muestra `trigger ... descartado en la captura -- gate BTC OFF
+  de la capa de captura, 07/10/2026 — ver `docs/pipeline/BACKLOG.md`).
+  **Con el gate ON, SC-02/SC-PB también pueden capturar** si sus propias
+  condiciones se cumplen -- no solo SC-01. Si se activa `BTC` o un
+  altcoin temporalmente para probar el camino completo y, con el gate
+  OFF, el log muestra `trigger ... descartado en la captura -- gate BTC OFF
   bloquea todos los longs cripto`, es el comportamiento CORRECTO, no un
   bug — `evalSC01()` en el JS real no exige el gate, pero la captura sí
   lo exige aquí, a propósito, más estricta que el scanner.

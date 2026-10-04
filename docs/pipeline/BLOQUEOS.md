@@ -5,82 +5,77 @@ Documento vivo -- se añade una entrada cuando algo bloquea un cierre real
 improvisa el valor que falta: se deja el código en el estado más seguro
 conocido y se sigue con el resto de la tarea.
 
-## 1. `computeMarketContext()` -- gate BTC de la ruta CRIPTO (06/10/2026)
+## 1. `computeMarketContext()` -- gate BTC de la ruta CRIPTO — RESUELTO (07/10/2026)
 
-**Qué falta:** el cuerpo real de `computeMarketContext(mode)`, de dónde
-sale `state.marketContext.gateOn` (qué indicador de BTC, qué umbral). Solo
-está confirmado el PUNTO DE LLAMADA en `runScan()` (línea 243, ya volcado
-en `docs/pipeline/pregunta5_5b_salida.txt` y compañía):
+**Texto literal confirmado** (`docs/pipeline/pregunta11_salida.txt`,
+línea 1384 real):
 
 ```js
-state.marketContext = await computeMarketContext(mode);
-renderMarketContext();
-const btcGateOn = mode==='CRYPTO' ? (state.marketContext ? state.marketContext.gateOn : false) : null;
+async function computeMarketContext(mode){
+  try{
+    if (mode==='NYSE'){
+      const ind = await fetchNyseTicker('SPY');
+      const d = ind['1d'];
+      if (!d) return null;
+      return {ticker:'SPY', price:d.price, ema50:d.ema50, gateOn:d.price>d.ema50, atrPct:d.atrPct, rsi:d.rsi};
+    } else {
+      const ind = await fetchCryptoTicker('BTC');
+      const d = ind['1d'];
+      if (!d) return null;
+      return {ticker:'BTC', price:d.price, ema50:d.ema50, gateOn:d.price>d.ema50, atrPct:d.atrPct, rsi:d.rsi, macdHist:d.macdHist};
+    }
+  }catch(e){ return null; }
+}
 ```
 
-La propia función nunca se ha extraído/dumpado -- ningún
-`pregunta*_salida.txt` contiene `function computeMarketContext`.
+`gateOn = BTC.price > BTC.ema50` (1D) -- confirma literalmente la regla
+del proyecto que el usuario describió ("BTC < EMA50 diaria = cero
+longs"). Portado a `snapshot_autocapture.compute_btc_gate()` (rama
+`'CRYPTO'` únicamente -- la rama `'NYSE'` real usa SPY, fuera de alcance
+de este script). Pruebas: `test_compute_btc_gate_price_mayor_que_ema50_da_true`/
+`_menor_que_ema50_da_false`/`_excepcion_da_false_igual_que_catch_del_js`/
+`_pide_solo_velas_1d_de_btc`.
 
-**Impacto real:** `evalSC02`/`evalSCPB` (`eval_sc02`/`eval_scpb` en
-`evaluate_ticker_logic.py`) ya están portados y verificados (devuelven
-`mkNA('...','Gate BTC OFF')` si `btcGateOn` es falso), pero NADA en el
-puerto decide todavía si el gate debería estar ON -- esa decisión vive
-solo dentro de `computeMarketContext()`.
+**Bug real encontrado y corregido en `verificar_cripto.sh` al validar
+este puerto (07/10/2026):** el resultado real `3/3 PASA, Gate BTC OFF
+(real)` que reportó el usuario era, en parte, un FALSO POSITIVO.
+`computeMarketContext()` llama a `fetchCryptoTicker('BTC')`, que llama a
+`fetchBinanceKlines()` -- ninguna de las dos estaba cargada en el
+contexto de Node del driver de `verificar_cripto.sh` (solo se extraían
+las 32 piezas compartidas con NYSE + `computeMarketContext()` sola).
+Al ejecutarse, `computeMarketContext()` lanzaba internamente
+`ReferenceError: fetchCryptoTicker is not defined` -- **silenciado por
+su propio `catch(e){return null}` real**, indistinguible desde fuera de
+un fallo de red genuino: el script veía `ctx=null` y reportaba
+`{"gateOn": false, "real": true, "error": null}`, que parecía un
+resultado de mercado legítimo sin serlo. Confirmado reproduciendo el
+`ReferenceError` exacto en Node (`fetchCryptoTicker is not defined`) y
+corregido extrayendo también `fetchBinanceKlines`/`fetchCryptoTicker`/
+`sleep`/`BINANCE_BASE` (líneas reales 1338/1356/707/1336) junto con
+`computeMarketContext()`, probado end-to-end con un mock de Binance:
+ahora `computeMarketContext()` ejecuta de verdad y devuelve un `ctx`
+real, no `null` por una dependencia ausente.
 
-**Qué se hizo mientras tanto, sin improvisar el cálculo:**
-`snapshot_autocapture.compute_btc_gate()` devuelve `False` siempre,
-documentado como sustituto temporal -- es exactamente la misma rama que
-ya tiene el código real cuando `state.marketContext` sale falsy (gate
-OFF), no una aproximación nueva. Con el gate forzado a OFF, SC-02/SC-PB
-nunca pueden disparar una señal long mientras esto no se resuelva --
-verificado en `test_snapshot_autocapture_cripto.py::test_compute_btc_gate_hoy_siempre_da_false_y_sc02_scpb_salen_na`.
+**Importante -- el "Gate BTC OFF" del 07/10/2026 NO está confirmado como
+real.** El puerto Python (`compute_btc_gate()`), ejecutado contra las
+velas de BTC que ese mismo run comiteó
+(`docs/pipeline/fixtures_js/oraculo_cripto/BTC_1d_candles.json`), da
+`price=85317.85 > ema50=78745.15` -> **gate ON**, lo contrario de lo que
+reportó el run con el bug. Esto no prueba que el gate esté ON ahora
+(los datos pueden haber cambiado) -- prueba que el "OFF (real)" anterior
+no es fiable. **Hace falta re-ejecutar `docs/pipeline/verificar_cripto.sh`
+(ya corregido) contra el servidor real para tener un valor de gate
+genuino** -- primera acción pendiente de este documento.
 
-**Cómo resolverlo:** ejecutar la Pregunta 11, ya añadida a
-`docs/pipeline/check_autocapture_triggers.sh`, contra el servidor real y
-pegar la salida completa (mismo patrón que las Preguntas 1-10). Una vez
-con el texto literal, portar `compute_market_context()` a
-`evaluate_ticker_logic.py` (o a `snapshot_autocapture.py` si resulta ser
-puramente cripto, sin dependencias de `ind`/`evaluate_ticker`) y sustituir
-`compute_btc_gate()` por la llamada real.
+## 2. `BINANCE_BASE` -- RESUELTO (07/10/2026)
 
-**Actualización (07/10/2026):** el usuario ejecutó
-`docs/pipeline/verificar_cripto.sh` en el servidor real -- resultado
-`3/3 PASA, Gate BTC OFF (real)`. Esto confirma que `computeMarketContext()`
-SÍ se pudo extraer sin ambigüedad y ejecutar bajo Node sin lanzar (el
-script ya no degradó el gate, salió "(real)" no "(degradado)") -- pero
-**el texto literal extraído no se ha pegado en esta sesión**, así que
-este bloqueo SIGUE ABIERTO: `compute_btc_gate()` en Python sigue siendo
-el sustituto que fuerza `False`, que hoy coincide con el valor real por
-cómo está el mercado, no porque ya esté portado. Para cerrar esto de
-verdad falta pegar aquí (o en un `pregunta11_salida.txt` nuevo) la
-salida completa de la Pregunta 11 -- en concreto el cuerpo de
-`computeMarketContext()` tal cual lo extrajo `verificar_cripto.sh`
-(queda guardado en
-`docs/pipeline/fixtures_js/oraculo_cripto/compute_market_context_extracted.js`
-en cada ejecución real, buscarlo ahí primero antes de pedir que se
-vuelva a correr la Pregunta 11 a mano).
-
-## 2. `BINANCE_BASE` -- valor real sin confirmar (06/10/2026)
-
-**Qué falta:** el valor de la constante `BINANCE_BASE`, usada en
-`fetchBinanceKlines()` (`` `${BINANCE_BASE}/api/v3/klines?...` ``,
-confirmado literal en `pregunta9_salida.txt`/`pregunta10_salida.txt`) --
-solo se ha visto el NOMBRE dentro de la URL interpolada, nunca la línea
-`const BINANCE_BASE = '...'` que le da valor.
-
-**Qué se hizo mientras tanto:** `snapshot_autocapture.BINANCE_BASE` usa
-el dominio público estándar (`https://api.binance.com`) como valor por
-defecto, **documentado como supuesto no confirmado**, overridable sin
-tocar código vía `AXONIK_BINANCE_BASE` si el servidor real usa otro
-dominio (p.ej. un proxy propio, o `api.binance.us` si el servidor opera
-desde EEUU).
-
-**Cómo resolverlo:** la Pregunta 11 ya añadida a
-`check_autocapture_triggers.sh` también busca
-`` (const|let|var)\s+BINANCE_BASE\b ``. Si el grep no encuentra nada (la
-constante puede estar definida con otra convención, p.ej. inline sin
-nombre), buscar a mano `api.binance` en `index.html` y pegar la línea
-exacta.
+**Valor real confirmado** (`docs/pipeline/pregunta11_salida.txt`, línea
+1336): `const BINANCE_BASE = 'https://data-api.binance.vision';` -- **NO**
+es `api.binance.com` (el dominio público "normal"), es el subdominio de
+solo datos de mercado de Binance. Corregido en
+`snapshot_autocapture.BINANCE_BASE` y en el valor por defecto de
+`docs/pipeline/verificar_cripto.sh`. Prueba:
+`test_binance_base_default_es_el_dominio_real_confirmado`.
 
 ## Nota de entorno (no es un bloqueo real -- no afecta al servidor)
 
