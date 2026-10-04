@@ -317,16 +317,28 @@ Abreviatura usada: **DOC-IDEM** =
     y Wilder (`calcRSI`/`calcATR`/`calcADX`) — reutilizar una función
     para las dos da un número sutilmente distinto sin error, mismo
     patrón que ya costó `risk_pct`/`risk_per_share` y `atrMax`.
-  - **Fixtures reales para probar el puerto (04/10/2026):**
-    `docs/pipeline/generar_fixtures_js.sh` — extrae las 10 funciones,
-    las ejecuta con Node real sobre velas reales de `scan-batch`, y
-    escribe fixtures en `docs/pipeline/fixtures_js/` (velas + JS
-    ejecutado + salida de cada función por separado). Probado en esta
-    sesión de punta a punta con un `index.html` sintético (texto
-    literal ya confirmado) y un `scan-batch` sintético — confirmó
-    además numéricamente el hallazgo de `ema200` (el fallback coincide
-    exacto con la media simple de los cierres). Pendiente: ejecutarlo
-    contra el servidor real y comitir los fixtures.
+  - **Fixtures reales comitidos y puerto Python completo (04/10/2026,
+    commit `4225c02` de los fixtures):** `indicator_calc.py` — las 9
+    funciones + `compute_indicators()`, con las dos familias de
+    suavizado en implementaciones separadas y el fallback de `ema200`
+    tal cual. **103 pruebas pasan** (`test_indicator_calc.py`) contra
+    los 9 fixtures reales (AAPL/MSFT/NVDA × 1d/1h/15m, tolerancia
+    `1e-9`), más 4 pruebas deterministas que fallan si alguien
+    "corrige" el fallback de `ema200`, intercambia Wilder por EMA
+    clásica, o agrupa `calc_vwap` por hora local.
+  - **Conectado con `evaluate_ticker_logic.py`:** `build_ind(data)` —
+    el puente entre `candles`/`periods` en bruto y el `ind` que
+    `evaluate_ticker()` siempre esperó. **9 pruebas de integración**
+    (`test_integration_build_ind.py`) corren la cadena completa
+    (`build_ind` → `evaluate_ticker` → `detect_auto_trigger`) sobre los
+    3 fixtures reales sin excepciones. Total de la suite:
+    **122 pruebas, todas pasan**.
+  - **Sin desplegar nada** (instrucción explícita del usuario). Queda
+    pendiente, antes de cerrar el paso 3: (a) decidir el contrato de
+    `POST /api/evaluate-ticker` (¿`ind` ya calculado como hoy, o
+    `candles` en bruto + `build_ind()` server-side?); (b) repetir
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con el endpoint actualizado
+    al contrato que se decida.
   - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
     de `results[0]`.** `main()` ya empareja cada resultado de
     `/api/scan-batch` por `item.get("ticker")` contra

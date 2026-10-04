@@ -10,19 +10,23 @@ prosa): docs/pipeline/pregunta5_5b_salida.txt, pregunta5c_salida.txt,
 pregunta5d_salida.txt. Cadena de dependencias cerrada: MAX_RAW_SCORE es
 un objeto literal de constantes, sin más llamadas.
 
-NO CONFIRMADO TODAVÍA (ver README antes de conectar a tráfico real):
-que el "data" real que devuelve scan_batch() en market_data_proxy.py
-tenga exactamente esta forma (ind[tf].ema20/.rsi/...). Solo tenemos un
-resumen en prosa de la forma EXTERNA de scan_batch
-({"results":[{"ticker","timestamp","data","error"?}]}), no el cuerpo
-literal de esa función — mismo tipo de hueco que ya causó el error de
-risk_pct/risk_per_share.
+RESUELTO (04/10/2026): la forma de "data" (ind[tf].ema20/.rsi/...) que
+asumía evaluate_ticker() **no** la produce scan_batch() directamente —
+scan_batch() solo devuelve candles/periods en bruto (confirmado contra
+el código real: KeyError 'price' en la primera verificación
+navegador-vs-endpoint). El cálculo real vive en computeIndicators() +
+9 funciones (Preguntas 9/10, fondo de la cadena), portado y probado
+contra fixtures reales en indicator_calc.py. build_ind() de abajo es el
+puente: toma el "data" en bruto de scan_batch() y produce el "ind" que
+evaluate_ticker() siempre esperó.
 """
 from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+import indicator_calc
 
 # --- Pieza: STRATEGY_META (línea 614 del navegador) -------------------------
 STRATEGY_META: dict[str, dict[str, Any]] = {
@@ -440,6 +444,30 @@ def apply_event_adjustments(strategies: list[dict], mode: str, funda: Optional[d
         result.append({**s, "score": score, "earningsAdj": earnings_adj,
                         "insiderAdj": insider_adj, "factors": factors, "verdict": verdict})
     return result
+
+
+def build_ind(data: dict) -> dict:
+    """
+    Puente entre el "data" en bruto de scan_batch() (shape confirmado:
+    {"1d": {"candles": [...], "periods": N}, "1h": {...}, "15m": {...}})
+    y el "ind" que evaluate_ticker() siempre esperó -- equivalente
+    Python de lo que hace fetchNyseTicker()/fetchCryptoTicker() en el
+    navegador antes de llamar a evaluateTicker() (Pregunta 8):
+    computeIndicators(candles, tf) por cada timeframe.
+
+    Un tf sin velas (o con "error") da ind[tf]=None -- mismo criterio
+    que el navegador (`tfData.candles && !tfData.error`), y
+    evaluate_ticker() ya maneja ind['1d'] is None devolviendo None.
+    """
+    ind: dict[str, Optional[dict]] = {}
+    for tf in ("1d", "1h", "15m"):
+        tf_data = data.get(tf)
+        candles = tf_data.get("candles") if tf_data else None
+        if not tf_data or not candles or tf_data.get("error"):
+            ind[tf] = None
+            continue
+        ind[tf] = indicator_calc.compute_indicators(candles, tf)
+    return ind
 
 
 def evaluate_ticker(ticker: str, ind: dict, funda: Optional[dict], mode: str,

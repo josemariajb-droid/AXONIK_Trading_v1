@@ -666,9 +666,46 @@ leyendo el código, el hallazgo de `ema200`: con 120 cierres sintéticos,
 el último valor de `emaArr(closes,200,true)` coincidió exactamente con
 `mean(closes)` (152.06108333333336 en ambos casos).
 
-**Pendiente:** ejecutarlo contra el `index.html` y el proxy reales, y
-comitir `docs/pipeline/fixtures_js/` — con eso se construyen las
-pruebas del puerto Python de las 9 funciones + `computeIndicators`.
+**Fixtures reales comitidos y puerto Python completo (04/10/2026,
+`docs/pipeline/fixtures_js/`, commit `4225c02`).**
+`services/snapshot-autocapture/indicator_calc.py`: las 9 funciones +
+`compute_indicators()`, 1:1 contra el texto literal, incluidas las dos
+convenciones de suavizado en implementaciones separadas (nunca
+compartiendo código entre EMA clásica y Wilder) y el fallback de
+`ema200` a media simple. **103 pruebas, todas pasan**, en
+`test_indicator_calc.py`: las 9 funciones + `compute_indicators()`
+contra las 9 combinaciones ticker×timeframe reales (AAPL/MSFT/NVDA ×
+1d/1h/15m, tolerancia relativa `1e-9`), más 4 pruebas deterministas
+independientes de los fixtures que protegen explícitamente los dos
+hallazgos de arriba (fallan si alguien "corrige" el fallback de
+`ema200`, si alguien intercambia Wilder por EMA clásica en RSI, o si
+alguien agrupa `calc_vwap` por hora local en vez de UTC).
+
+**Conectado con `evaluate_ticker_logic.py`:** `build_ind(data)` — el
+puente que faltaba entre el `"data"` en bruto de `scan_batch()`
+(`candles`/`periods`) y el `"ind"` que `evaluate_ticker()` siempre
+esperó, equivalente Python de lo que hacía `fetchNyseTicker()` en el
+navegador. Probado de punta a punta (`test_integration_build_ind.py`,
+9 pruebas) sobre los `data` reales de los 3 fixtures: `build_ind()` +
+`evaluate_ticker()` + `detect_auto_trigger()` corren sin excepciones
+sobre candles reales, con un shape de resultado coherente — **no** es
+todavía una comparación contra un resultado real del navegador, eso
+sigue pendiente (ver abajo).
+
+**Lo que falta, explícitamente, antes de poder cerrar el paso 3:**
+1. Decidir el contrato de `POST /api/evaluate-ticker`: ¿recibe `ind` ya
+   calculado (como hoy, obligando al cliente a portar
+   `computeIndicators` también) o recibe `candles` en bruto y calcula
+   `ind` él mismo con `build_ind()` (single source of truth real, sin
+   que el cliente necesite saber nada de indicadores)? No decidido
+   todavía — `evaluate_ticker_endpoint.py` sigue con el contrato
+   antiguo (`ind` ya calculado), ahora desalineado con lo que de verdad
+   produce `scan_batch()`.
+2. Repetir `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` con el endpoint
+   actualizado — la comparación real contra `evaluateTicker()` del
+   navegador sigue sin hacerse con el gap de `computeIndicators()` ya
+   cerrado.
+3. Nada de esto se ha desplegado — instrucción explícita del usuario.
 
 **Matiz al punto 1 (04/10/2026): `scan-data` y `scan-batch` devuelven las
 mismas velas, solo cambia el envoltorio.** Se compararon respuestas reales
