@@ -528,13 +528,76 @@ decisión de que el endpoint reciba `candles` en bruto y calcule él
 mismo, server-side, para no duplicar ese cálculo en dos sitios — a
 decidir una vez se vea el cuerpo real).
 
-**Pregunta 9 añadida** a `check_autocapture_triggers.sh`: extrae
-`computeIndicators`/`fetchBinanceKlines` completas (ventana ampliada a
-3000 líneas, dado el tamaño esperado). **Sigue sin reintentarse la
-verificación navegador-vs-endpoint** hasta tener el cuerpo literal y
-confirmar si `computeIndicators()` llama a su vez a sub-funciones de
-cálculo (EMA/RSI/MACD/ADX por separado) no identificadas todavía —
-instrucción explícita del usuario, mismo criterio que ya aplicó a
+**Pregunta 9 confirmada (04/10/2026, `docs/pipeline/pregunta9_salida.txt`,
+commit `409d7a7`).** Texto literal:
+
+```js
+function computeIndicators(candles, tf){
+  if (!candles || candles.length < 5) return null;
+  const closes = candles.map(c=>c.c), highs = candles.map(c=>c.h),
+        lows = candles.map(c=>c.l), volumes = candles.map(c=>c.v);
+  const price = closes[closes.length-1];
+  const ema20 = emaArr(closes,20)[closes.length-1];
+  const ema50 = emaArr(closes,50)[closes.length-1];
+  const ema200 = emaArr(closes,200,true)[closes.length-1];
+  const rsi = calcRSI(closes,14);
+  const [macd, macdSignal, macdHist, macdHistPrev] = calcMACD(closes);
+  const atr = calcATR(highs,lows,closes,14);
+  const atrPct = (atr && price) ? atr/price*100 : NaN;
+  const rvol = calcRVOL(volumes);
+  const adxR = calcADX(highs,lows,closes,14);
+  const compression = calcCompression(candles,6);
+  const gapPct = tf==='1d' ? calcGapPct(candles) : NaN;
+  const vwap = tf==='15m' ? calcVWAP(candles) : NaN;
+  return {price, ema20, ema50, ema200, rsi, macd, macdSignal, macdHist, macdHistPrev,
+          atr, atrPct, rvol, adx:adxR.adx, diPlus:adxR.diPlus, diMinus:adxR.diMinus,
+          compression, gapPct, vwap, candles};
+}
+```
+
+Respuesta a las cuatro preguntas pendientes:
+
+1. **Completitud:** sí — cruzando este objeto de retorno contra cada
+   campo que leen los 10 `evalXX` (confirmados literal en Pregunta 5b) y
+   `tickerHardNo()` (Pregunta 5), `computeIndicators()` produce todos:
+   `price`, `ema20/50/200`, `rsi`, `macdHist`/`macdHistPrev`, `atrPct`
+   (lo usa `tickerHardNo`), `rvol`, `adx`/`diPlus`/`diMinus`,
+   `compression`, `gapPct`, `vwap`, y además devuelve `candles` sin
+   modificar (lo necesita `evalST09` directamente, no un derivado).
+   Nada de lo que los `evalXX` esperan queda sin cubrir.
+2. **Campos que devuelve:** los 19 del objeto de retorno de arriba.
+   Nota: `gapPct` solo se calcula para `tf==='1d'` (si no, `NaN`) y
+   `vwap` solo para `tf==='15m'` — coherente con que `evalST05` solo lee
+   `d.gapPct` y `evalST01`/`evalST05`/`evalST09`/`evalST16` solo leen
+   `m.vwap`.
+3. **Funciones auxiliares que faltan:** **9**, ninguna confirmada
+   todavía — `emaArr`, `calcRSI`, `calcMACD`, `calcATR`, `calcRVOL`,
+   `calcADX`, `calcCompression`, `calcGapPct`, `calcVWAP`. Son las que
+   implementan la aritmética real de indicadores técnicos — el tipo de
+   código donde una convención distinta (suavizado de Wilder vs. simple,
+   semilla con SMA vs. sin semilla, ventana de calentamiento) da un
+   número ligeramente distinto sin lanzar ningún error. Mismo riesgo que
+   ya se materializó con `risk_pct`/`risk_per_share` y `atrMax`, pero
+   aquí con superficie mucho mayor (9 funciones, no 1 campo).
+4. **Convención de suavizado:** señalada, no confirmada —
+   `emaArr(closes,200,true)` pasa un tercer argumento `true` que
+   `emaArr(closes,20)`/`emaArr(closes,50)` no pasan. Sin ver el cuerpo
+   de `emaArr()`, no se puede saber qué hace ese flag (semilla distinta,
+   tratamiento especial cuando hay menos de 200 velas, u otra cosa) —
+   exactamente lo que pide confirmar la Pregunta 10.
+
+**`fetchBinanceKlines()` confirmada, sin más hallazgos** (crypto ya
+excluido de esta automatización por `EXCLUDED_MARKETS`, prioridad baja):
+reintentos con `sleep(800)`, mapea el array de Binance a
+`{t,o,h,l,c,v}` con `t` en segundos epoch (`Math.floor(k[0]/1000)`) —
+mismo shape de vela que NYSE, consistente con que ambas rutas alimentan
+la misma `computeIndicators()`. `BINANCE_BASE` es una constante de URL,
+no vista todavía, trivial y no bloqueante.
+
+**Pregunta 10 añadida** a `check_autocapture_triggers.sh`: extrae las 9
+funciones de cálculo completas. **No se porta nada todavía y sigue sin
+reintentarse la verificación navegador-vs-endpoint** — instrucción
+explícita del usuario, mismo criterio que ya aplicó a
 `risk_pct`/`risk_per_share` y al shape de `scan-batch`: texto literal
 antes de tocar código, nunca una suposición más sobre otra suposición.
 

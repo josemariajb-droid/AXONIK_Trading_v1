@@ -288,11 +288,32 @@ Abreviatura usada: **DOC-IDEM** =
     `ind` ya calculado) nunca tuvo una fuente server-side real: ni
     `/api/scan-batch` ni nada en `snapshot_autocapture.py` calculan
     estos campos — solo devuelven `candles`/`periods` en bruto.
-  - **Pregunta 9 añadida** a `check_autocapture_triggers.sh`: extrae
-    `computeIndicators`/`fetchBinanceKlines` completas. **Sigue sin
-    reintentarse la verificación** hasta tener el cuerpo literal y
-    confirmar si llama a su vez a sub-funciones de cálculo (EMA/RSI/
-    MACD/ADX por separado) no identificadas todavía.
+  - **Pregunta 9 confirmada (04/10/2026, `docs/pipeline/pregunta9_salida.txt`,
+    commit `409d7a7`):** `computeIndicators(candles, tf)` produce los 19
+    campos que necesitan los 10 `evalXX`/`tickerHardNo` — completitud
+    confirmada, nada sin cubrir. Pero delega en **9 funciones de
+    cálculo nunca extraídas**: `emaArr`, `calcRSI`, `calcMACD`,
+    `calcATR`, `calcRVOL`, `calcADX`, `calcCompression`, `calcGapPct`,
+    `calcVWAP` — la aritmética real de indicadores técnicos, con riesgo
+    de convención (Wilder vs. suavizado simple, semilla, ventana de
+    calentamiento) mucho mayor que cualquier gap anterior. Dato a
+    confirmar: `emaArr(closes,200,true)` pasa un 3er argumento que
+    `ema20`/`ema50` no pasan — qué hace, sin confirmar.
+    `fetchBinanceKlines()` confirmada sin hallazgos nuevos (crypto ya
+    excluido de esta automatización, prioridad baja).
+  - **Pregunta 10 añadida** a `check_autocapture_triggers.sh`: extrae
+    las 9 funciones de cálculo completas. **No se porta nada todavía ni
+    se reintenta la verificación** hasta tener ese texto literal.
+  - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
+    de `results[0]`.** `main()` ya empareja cada resultado de
+    `/api/scan-batch` por `item.get("ticker")` contra
+    `universo_por_ticker` (dict por ticker), no por índice — confirmado
+    leyendo el código, sin cambios necesarios. Se corrigió además el
+    único `results[0]` que quedaba, en el ejemplo de un solo ticker de
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`, por consistencia (no era un
+    bug ahí — una sola petición no tiene ambigüedad de orden — pero
+    conviene que todo el repo use el mismo criterio de "emparejar por
+    ticker, nunca por posición").
 - **Sigue sin resolver, fuera del alcance de este paso:** de dónde salen
   `entry_price`/`stop_price`/`risk_per_share` (no están en el shape de
   `evaluate_ticker_logic.evaluate_ticker()`).

@@ -26,12 +26,14 @@ curl -s -X POST http://127.0.0.1:8002/api/scan-batch \
   -H 'Content-Type: application/json' \
   -d '{"tickers": ["AAPL"]}' | python3 -m json.tool > /tmp/aapl_scanbatch.json
 
-# Extraer solo el campo "data" del primer resultado (es el "ind" que
-# espera evaluate-ticker):
+# Extraer el campo "data" del resultado de AAPL (emparejado por ticker,
+# no por índice [0] -- con una sola petición da igual, pero es el mismo
+# criterio que ya debe seguir snapshot_autocapture.py con 17 tickers):
 python3 -c "
 import json
 r = json.load(open('/tmp/aapl_scanbatch.json'))
-json.dump(r['results'][0]['data'], open('/tmp/aapl_ind.json','w'), indent=2)
+item = next(i for i in r['results'] if i['ticker'] == 'AAPL')
+json.dump(item['data'], open('/tmp/aapl_ind.json','w'), indent=2)
 "
 cat /tmp/aapl_ind.json
 ```

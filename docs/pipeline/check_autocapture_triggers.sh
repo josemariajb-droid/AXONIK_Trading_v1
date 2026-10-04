@@ -446,6 +446,25 @@ for name in computeIndicators fetchBinanceKlines; do
 done
 
 echo
-echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7, 8 y 9 -- hasta"
-echo "    tener el cuerpo literal de computeIndicators() (y confirmar si llama a algo"
-echo "    más sin confirmar) no se reintenta la verificación navegador-vs-endpoint. ==="
+echo "=== Pregunta 10: las 9 funciones auxiliares de cálculo de computeIndicators() ==="
+echo "--- computeIndicators() (Pregunta 9) confirmó que delega el cálculo real en"
+echo "    9 funciones que nunca se han extraído: emaArr, calcRSI, calcMACD,"
+echo "    calcATR, calcRVOL, calcADX, calcCompression, calcGapPct, calcVWAP."
+echo "    Son las que de verdad implementan la aritmética de indicadores"
+echo "    técnicos -- el tipo de código donde una convención distinta (Wilder"
+echo "    vs. suavizado simple, semilla con SMA vs. sin semilla, ventana de"
+echo "    calentamiento) produce un número ligeramente distinto sin lanzar"
+echo "    ningún error, exactamente el tipo de bug silencioso que ya costó"
+echo "    risk_pct/risk_per_share y atrMax en pasos anteriores. Fíjate en"
+echo "    especial en emaArr(closes,200,true) -- el tercer argumento true"
+echo "    solo aparece para ema200, no para ema20/ema50; confirmar qué hace. ---"
+for name in emaArr calcRSI calcMACD calcATR calcRVOL calcADX calcCompression calcGapPct calcVWAP; do
+    echo "- $name:"
+    print_js_def "$SCANNER_HTML" "$name" 500
+done
+
+echo
+echo "=== Fin. Pega la salida completa de las Preguntas 5, 5b, 5c, 5d, 6, 7, 8, 9 y 10 -- hasta"
+echo "    tener el cuerpo literal de las 9 funciones de cálculo (y confirmar si alguna"
+echo "    llama a algo más sin confirmar) no se porta nada ni se reintenta la"
+echo "    verificación navegador-vs-endpoint. ==="
