@@ -339,9 +339,12 @@ Abreviatura usada: **DOC-IDEM** =
     cálculo. `ind` ya calculado sigue como alternativa explícita,
     mutuamente excluyente (422 si llegan los dos o ninguno).
     `evaluate_ticker_endpoint.py` rediseñado para ser importable y
-    testeable sin `NameError` (el problema real de la versión
-    anterior: `@app.post(...)` como decorador de módulo con `app` sin
-    definir). **Hallazgo al probarlo, no al suponerlo: NaN no es JSON
+    testeable sin `NameError` — problema distinto del `NameError` real
+    de producción (que fue `Optional` sin importar en
+    `market_data_proxy.py`, ver más abajo): este era `@app.post(...)`
+    como decorador de módulo con `app` sin definir en el repo, sin
+    relación con el incidente real. **Hallazgo al probarlo, no al
+    suponerlo: NaN no es JSON
     válido en ninguna dirección** — Starlette usa `allow_nan=False` y
     lanza `ValueError` al servir NaN (confirmado con fastapi 0.141.1
     real, no supuesto); lo mismo al recibirlo. Resuelto con
@@ -356,12 +359,23 @@ Abreviatura usada: **DOC-IDEM** =
     `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` actualizada al contrato
     nuevo (Paso B envía `candles`; Paso C calcula `ind` con el propio
     `computeIndicators()` del navegador antes de llamar a
-    `evaluateTicker()`).
+    `evaluateTicker()`, con un replacer para que su NaN se compare con
+    el `"NaN"` del endpoint y no con el `null` que da
+    `JSON.stringify(NaN)` por defecto en JS).
+  - **`docs/pipeline/deploy_evaluate_endpoint.sh` (05/10/2026):**
+    aplica el patch de forma idempotente (preflight de imports/módulos,
+    backup+sha256, reemplazo del bloque sin duplicar la ruta, imports
+    de cabecera verificados, restart con rollback automático, prueba
+    de humo con AAPL real) — reemplaza los pasos manuales de antes.
+    Probado contra una app FastAPI real: instalación desde cero,
+    reemplazo de un bloque viejo roto (simulando el incidente real del
+    `NameError` de `Optional`), dos ejecuciones idempotentes seguidas,
+    y el rollback forzado deliberadamente (restaura el backup exacto).
   - **Sin desplegar nada** (instrucción explícita del usuario). Queda
-    pendiente, antes de cerrar el paso 3: (a) aplicar
-    `evaluate_ticker_endpoint.py` a `market_data_proxy.py` real (Paso
-    1b del README); (b) ejecutar `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md`
-    contra el servidor real.
+    pendiente, antes de cerrar el paso 3: (a) ejecutar
+    `docs/pipeline/deploy_evaluate_endpoint.sh` contra el servidor real
+    (Paso 1b del README); (b) ejecutar
+    `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` contra el servidor real.
   - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
     de `results[0]`.** `main()` ya empareja cada resultado de
     `/api/scan-batch` por `item.get("ticker")` contra

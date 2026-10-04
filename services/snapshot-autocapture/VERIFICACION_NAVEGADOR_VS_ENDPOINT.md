@@ -67,23 +67,13 @@ json.dump(payload, open('/tmp/aapl_request.json','w'))
 "
 curl -s -X POST http://127.0.0.1:8002/api/evaluate-ticker \
   -H 'Content-Type: application/json' \
-  -d @/tmp/aapl_request.json -o /tmp/aapl_endpoint_raw.json
+  -d @/tmp/aapl_request.json -o /tmp/aapl_endpoint.json
 
-# El endpoint sirve NaN como el string sentinela "NaN" (NaN no es JSON
-# válido -- ver evaluate_ticker_endpoint.py); el navegador, en cambio,
-# serializa NaN como null vía JSON.stringify (comportamiento nativo de
-# JS). Se normalizan los dos a null aquí para que el Paso D pueda
-# comparar el JSON completo, no solo el resumen.
-python3 -c "
-import json
-def sentinel_a_null(o):
-    if o == 'NaN': return None
-    if isinstance(o, dict): return {k: sentinel_a_null(v) for k, v in o.items()}
-    if isinstance(o, list): return [sentinel_a_null(v) for v in o]
-    return o
-r = json.load(open('/tmp/aapl_endpoint_raw.json'))
-json.dump(sentinel_a_null(r), open('/tmp/aapl_endpoint.json','w'), indent=2)
-"
+# El endpoint sirve NaN como el string sentinela "NaN" explícito (NaN
+# no es JSON válido -- ver evaluate_ticker_endpoint.py). El Paso C usa
+# un replacer para que el navegador serialice NaN de la misma forma
+# (JSON.stringify(NaN) da null por defecto en JS -- sin el replacer,
+# los dos lados no serían comparables campo a campo donde haya NaN).
 cat /tmp/aapl_endpoint.json
 ```
 
@@ -104,7 +94,11 @@ cat /tmp/aapl_endpoint.json
    hace `fetchNyseTicker()` (Pregunta 8) — así los dos lados (navegador
    y endpoint) parten de las mismas velas en bruto y cada uno calcula
    `ind` con su propia implementación, la comparación más completa
-   posible:
+   posible. **Serializar con un replacer, no con `JSON.stringify(r, null, 2)`
+   a secas** — `JSON.stringify(NaN)` da `null` en JS de forma nativa, y
+   el endpoint sirve NaN como el string `"NaN"` (Paso B): sin el
+   replacer, cualquier campo NaN compararía `null` contra `"NaN"` y
+   parecería una discrepancia real sin serlo:
    ```js
    const data = /* pegar aquí el JSON de /tmp/aapl_candles.json */;
    const ind = {};
@@ -113,8 +107,9 @@ cat /tmp/aapl_endpoint.json
      ind[tf] = (tfData && tfData.candles && !tfData.error) ? computeIndicators(tfData.candles, tf) : null;
    }
    const r = evaluateTicker('AAPL', ind, null, 'NYSE', state.settings, false, null);
-   console.log(JSON.stringify(r, null, 2));
-   copy(JSON.stringify(r, null, 2));  // Chrome/Firefox: copia al portapapeles
+   const nanSafeReplacer = (k, v) => (typeof v === 'number' && Number.isNaN(v)) ? 'NaN' : v;
+   console.log(JSON.stringify(r, nanSafeReplacer, 2));
+   copy(JSON.stringify(r, nanSafeReplacer, 2));  // Chrome/Firefox: copia al portapapeles
    ```
 4. Pegar ese resultado en `/tmp/aapl_browser.json`.
 

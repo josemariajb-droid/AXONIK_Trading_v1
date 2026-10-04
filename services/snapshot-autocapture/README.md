@@ -101,39 +101,42 @@ Addendum 4 del otro documento.
 
 ## Paso 1b — aplicar `POST /api/evaluate-ticker` (contrato de candles en bruto, 05/10/2026)
 
-Decorador/imports confirmados en `docs/pipeline/pregunta6_salida.txt`
-(6a/6b/6c/6d). Código completo, listo para pegar, en
-`evaluate_ticker_endpoint.py` de este directorio — léelo primero: trae
-la lista exacta de imports y el porqué de cada uno (para no repetir un
-`NameError` por dar algo por sabido).
+**Incidente real de producción (04/10/2026), para que no se repita:**
+un despliegue anterior pegó el bloque del endpoint en
+`market_data_proxy.py` sin añadir `from typing import Optional` a la
+cabecera — `EvaluateTickerRequest.funda: Optional[dict] = None`
+reventó con `NameError: name 'Optional' is not defined` en cuanto
+FastAPI intentó construir el modelo. Es un error de despliegue (un
+import que faltaba en el archivo real), distinto del problema de
+diseño de `evaluate_ticker_endpoint.py` (que se dejó sin decorador en
+el repo para que fuera importable en pruebas sin fallar al importarlo)
+— no son la misma cosa, y `docs/pipeline/deploy_evaluate_endpoint.sh`
+existe específicamente para que la comprobación de imports (y todo lo
+demás) sea mecánica, no "a mano y con suerte" otra vez.
 
 ```bash
-cp evaluate_ticker_logic.py /opt/axonik/scripts/evaluate_ticker_logic.py
-cp indicator_calc.py /opt/axonik/scripts/indicator_calc.py
-
-cp /opt/axonik/scripts/market_data_proxy.py /opt/axonik/scripts/market_data_proxy.py.bak.$(date +%Y%m%d_%H%M%S)
-sha256sum /opt/axonik/scripts/market_data_proxy.py  # anotar antes de tocar nada
+docs/pipeline/deploy_evaluate_endpoint.sh
 ```
 
-Editar `/opt/axonik/scripts/market_data_proxy.py` a mano:
-1. Añadir a la cabecera (si no están ya): `import json`,
-   `from fastapi import Response` (`HTTPException` ya está importado),
-   `import evaluate_ticker_logic as etl`.
-2. Pegar el contenido de `evaluate_ticker_endpoint.py` desde
-   `class EvaluateTickerRequest` hasta el final (sin la cabecera de
-   comentarios ni los imports, ya añadidos en el paso 1) inmediatamente
-   después de la línea `return {"results": results}` que cierra
-   `scan_batch()`.
-3. **Añadir la línea `@app.post("/api/evaluate-ticker")`** justo encima
-   de `async def evaluate_ticker_endpoint(req: EvaluateTickerRequest):`
-   — no viene en el archivo del repo a propósito (así es importable y
-   testeable sin `NameError`, ver cabecera de `evaluate_ticker_endpoint.py`).
+Es idempotente (se puede ejecutar varias veces sin duplicar nada) y
+hace, en orden: copia `indicator_calc.py`/`evaluate_ticker_logic.py` a
+`/opt/axonik/scripts/` y comprueba que importan *antes* de tocar
+`market_data_proxy.py`; backup con timestamp + sha256; reemplaza el
+bloque del endpoint (viejo o nuevo, lo que haya) sin duplicar la ruta;
+añade a la cabecera los imports que falten (`json`, `Optional`,
+`Response`, `HTTPException`, `BaseModel`, `evaluate_ticker_logic`) sin
+duplicar los que ya estén; `py_compile`; reinicia el servicio y espera
+~8s; si no queda sano (`systemctl is-active` + `/api/health`), restaura
+el backup, reinicia y muestra el journal. Termina con una prueba de
+humo: AAPL real (200 + `price` presente) y payload vacío (422). **No
+habilita ningún timer ni toca nada más** — probado de punta a punta
+contra una app FastAPI real en esta sesión (instalación desde cero,
+reemplazo de un bloque viejo roto, dos ejecuciones idempotentes
+seguidas, y el rollback forzado deliberadamente, los cinco casos
+confirmados antes de entregarlo).
 
-```bash
-python3 -m py_compile /opt/axonik/scripts/market_data_proxy.py
-systemctl restart axonik-market-proxy
-curl -s http://127.0.0.1:8002/api/health  # debe seguir respondiendo
-```
+Variables de entorno si algo no está en la ruta por defecto:
+`PROXY_PY`, `SCRIPTS_DIR`, `PROXY_BASE`, `SERVICE_NAME`.
 
 **Contrato del endpoint:** recibe `candles` en bruto (el `data` de
 `scan_batch()`) y calcula `ind` él mismo con `build_ind()` — un único

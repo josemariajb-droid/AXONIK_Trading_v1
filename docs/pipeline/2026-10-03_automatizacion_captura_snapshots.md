@@ -715,13 +715,27 @@ rechaza igual). Solución: `evaluate_ticker_logic.nan_to_json_sentinel()`/
 direcciones, con una única implementación compartida por el endpoint,
 `snapshot_autocapture.py` y las pruebas.
 
-**`evaluate_ticker_endpoint.py` rediseñado para ser importable y
-testeable sin `NameError`** (el problema real de la versión anterior,
-que tenía `@app.post(...)` como decorador de módulo con `app` sin
-definir — importarlo para probarlo fallaba antes de ejecutar nada). La
-función queda sin decorador en el repo; el decorador se añade a mano
-al pegarlo en `market_data_proxy.py` (única pieza que de verdad
-pertenece solo al archivo real). Imports listados explícitamente en su
+**Dos problemas distintos, no uno — el registro los mezclaba y el
+usuario lo corrigió (05/10/2026):**
+1. El **NameError real de producción** (04/10/2026) fue
+   `Optional` sin importar en la cabecera de `market_data_proxy.py` —
+   un despliegue anterior pegó el bloque sin añadir
+   `from typing import Optional`, y `funda: Optional[dict] = None`
+   reventó en cuanto FastAPI construyó el modelo. Es un error de
+   despliegue (import que faltaba en el archivo real).
+2. **Problema distinto, de este repo**: `evaluate_ticker_endpoint.py`
+   tenía `@app.post(...)` como decorador de módulo con `app` sin
+   definir ni importar — al intentar `import evaluate_ticker_endpoint`
+   para escribir sus pruebas, Python fallaba antes de ejecutar nada
+   (aquí, al importar el archivo suelto, no en `market_data_proxy.py`).
+   Sin relación con el incidente de producción del punto 1.
+
+**Rediseñado para resolver el punto 2** sin tocar la causa del punto 1
+(ya cubierta por `deploy_evaluate_endpoint.sh`, que comprueba/añade los
+imports de forma mecánica): la función queda sin decorador en el repo;
+el decorador se añade al pegarlo en `market_data_proxy.py` (única
+pieza que de verdad pertenece solo al archivo real) — ahora lo hace el
+script, no a mano. Imports listados explícitamente en su
 docstring.
 
 **Probado contra una app FastAPI real** (`test_evaluate_ticker_endpoint.py`,
@@ -735,14 +749,27 @@ suite en `services/snapshot-autocapture/`: **131 pruebas, todas pasan**.
 `candles`: el Paso B envía el `data` en bruto de `scan-batch`
 directamente; el Paso C, en el navegador, calcula `ind` con el propio
 `computeIndicators()` del navegador sobre esas mismas velas antes de
-llamar a `evaluateTicker()` — los dos lados parten de datos idénticos
-y cada uno calcula `ind` con su propia implementación, la comparación
-más completa posible.
+llamar a `evaluateTicker()`, serializando con un replacer
+(`(k,v) => Number.isNaN(v) ? 'NaN' : v`) para que el NaN del navegador
+se compare con el `"NaN"` sentinela del endpoint, no con `null` —
+`JSON.stringify(NaN)` da `null` por defecto en JS, sin el replacer el
+diff del Paso D marcaría discrepancias falsas donde solo hay NaN.
+
+**`docs/pipeline/deploy_evaluate_endpoint.sh` (05/10/2026):** aplica el
+patch de forma idempotente en vez de los pasos manuales de antes —
+preflight de imports/módulos antes de tocar el proxy, backup con
+sha256, reemplazo del bloque sin duplicar la ruta, verificación de
+imports de cabecera, restart con rollback automático si no queda sano,
+y prueba de humo con AAPL real. Probado en esta sesión contra una app
+FastAPI real: instalación desde cero, reemplazo de un bloque viejo
+roto (simulando el incidente real del `NameError` de `Optional`), dos
+ejecuciones idempotentes seguidas sin duplicar la ruta, y el rollback
+forzado deliberadamente (restaura el backup exacto, sin diferencias).
 
 **Lo que falta, explícitamente, antes de poder cerrar el paso 3:**
-1. Aplicar `evaluate_ticker_endpoint.py` a `market_data_proxy.py` real
-   (Paso 1b del README — código y contrato ya confirmados y probados,
-   falta pegarlo).
+1. Ejecutar `docs/pipeline/deploy_evaluate_endpoint.sh` contra el
+   servidor real (Paso 1b del README — código, contrato y script ya
+   confirmados y probados).
 2. Ejecutar `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` contra el servidor
    real — la comparación real contra `evaluateTicker()` del navegador
    sigue sin hacerse.

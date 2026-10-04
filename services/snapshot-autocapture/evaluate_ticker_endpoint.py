@@ -13,21 +13,30 @@ mantiene "ind" ya calculado como alternativa explícita, mutuamente
 excluyente con "candles" (422 si llegan los dos o ninguno) -- útil para
 pruebas o un futuro cliente que ya tenga los indicadores.
 
-ESTE ARCHIVO ES IMPORTABLE Y TESTEABLE TAL CUAL (ver
-test_evaluate_ticker_endpoint.py) -- a propósito, para no repetir el
-NameError de la versión anterior (que tenía `@app.post(...)` como
-decorador de módulo, y `app`/`HTTPException` sin definir ni importar en
-este archivo; importarlo para probarlo reventaba antes de llegar a
-ejecutar nada). Aquí:
-  - `HTTPException` se importa directamente de `fastapi` (duplicar el
-    import en market_data_proxy.py, que ya lo tiene, es inocuo).
-  - La única pieza que de verdad pertenece solo al archivo real es la
-    variable `app` (la instancia FastAPI, un singleton de ese módulo) --
-    por eso la función de abajo se queda SIN decorador aquí, y el
-    decorador se añade a mano al pegarla (ver "DÓNDE Y CÓMO PEGAR").
+DOS PROBLEMAS DISTINTOS, NO UNO -- el registro los mezclaba:
 
-IMPORTS que este bloque necesita y de dónde salen (pedido explícito:
-no repetir el NameError por no listarlos):
+1. **NameError real de producción (04/10/2026, en market_data_proxy.py):**
+   `Optional` sin importar en la cabecera -- el patch anterior se pegó
+   sin añadir ese import, y el campo `funda: Optional[dict] = None` de
+   `EvaluateTickerRequest` reventó en cuanto FastAPI intentó construir
+   el modelo. Es un error de despliegue (un import que faltaba en el
+   archivo real), resuelto aquí listando explícitamente, abajo, todos
+   los imports que este bloque necesita -- y por `deploy_evaluate_endpoint.sh`
+   (docs/pipeline/), que los comprueba/añade antes de reiniciar.
+2. **Importabilidad del snippet para pruebas (problema de este repo,
+   sin relación con el incidente anterior):** este archivo, tal cual
+   vivía antes en el repo, tenía `@app.post(...)` como decorador de
+   módulo con `app` sin definir -- al intentar `import
+   evaluate_ticker_endpoint` para escribir `test_evaluate_ticker_endpoint.py`,
+   Python fallaba antes de ejecutar nada (no en market_data_proxy.py,
+   aquí mismo, al importar el archivo suelto). Se resolvió dejando la
+   función SIN decorador en el repo -- la única pieza que de verdad
+   pertenece solo al archivo real es la variable `app` (un singleton de
+   ese módulo), así que el decorador se añade a mano al pegar (ver
+   "DÓNDE Y CÓMO PEGAR") o lo añade `deploy_evaluate_endpoint.sh`.
+
+IMPORTS que este bloque necesita y de dónde salen (para no repetir el
+NameError real del punto 1 por no listarlos):
   - `json` de la librería estándar -- import de este archivo (para
     servir el NaN sentinel, ver más abajo).
   - `Optional` de `typing` -- import de este archivo.
