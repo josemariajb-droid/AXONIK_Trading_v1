@@ -594,12 +594,57 @@ mismo shape de vela que NYSE, consistente con que ambas rutas alimentan
 la misma `computeIndicators()`. `BINANCE_BASE` es una constante de URL,
 no vista todavía, trivial y no bloqueante.
 
-**Pregunta 10 añadida** a `check_autocapture_triggers.sh`: extrae las 9
-funciones de cálculo completas. **No se porta nada todavía y sigue sin
-reintentarse la verificación navegador-vs-endpoint** — instrucción
-explícita del usuario, mismo criterio que ya aplicó a
-`risk_pct`/`risk_per_share` y al shape de `scan-batch`: texto literal
-antes de tocar código, nunca una suposición más sobre otra suposición.
+**Pregunta 10 confirmada (04/10/2026, `docs/pipeline/pregunta10_salida.txt`,
+commit `62c5cb3`) — FONDO DE LA CADENA.** Las 9 funciones, completas
+(balance de llaves verificado programáticamente, no a ojo — ninguna
+corte de seguridad), y **ninguna llama a algo que no esté ya en el
+texto** (`calcMACD` llama a `emaArr`, una de las propias 9; `calcADX`
+define su propio `wilder()` local, mostrado entero dentro de su cuerpo,
+no una dependencia externa). **No hace falta Pregunta 11 para el
+cálculo — a partir de aquí se puede empezar a portar.**
+
+| Función | Convención de suavizado | Si faltan velas |
+|---|---|---|
+| `emaArr(prices,period,allowPartial)` | EMA clásica, `k=2/(period+1)`, semilla = SMA de los primeros `period` valores | `allowPartial` falso → array de `NaN`; `allowPartial` verdadero y `n>=2` → **semilla = media simple de TODOS los valores disponibles**, no una EMA real |
+| `calcRSI` | **Wilder** (`avg=(avg·(period-1)+x)/period`) | `NaN` si `length < period+2`; `avgL===0` → `100` |
+| `calcMACD` | EMA clásica vía `emaArr` (sin `allowPartial`) para fast/slow/signal | `[NaN,NaN,NaN,NaN]` si faltan puntos válidos |
+| `calcATR` | Wilder | `NaN` si `length < period+2` |
+| `calcRVOL` | media simple de las 20 velas previas (sin la actual) | `NaN` si `length < 21` |
+| `calcADX` | Wilder (en la suma de TR/+DM/-DM y en el promediado final del ADX) | `{adx:NaN,...}` si `n < period*2`; `adx:NaN` pero `diPlus`/`diMinus` con valor si `dx.length < period` |
+| `calcCompression` | sin suavizado — rango simple de las últimas `n` velas | `NaN` si `length < n` |
+| `calcGapPct` | sin suavizado — % entre `open` de hoy y `close` de ayer | `NaN` si `length < 2` |
+| `calcVWAP` | sin suavizado — VWAP de las velas del mismo día **calendario UTC** que la última vela | `NaN` si no hay velas o volumen 0 |
+
+Alineación: todas devuelven el valor correspondiente a la **última**
+vela (`arr[arr.length-1]` o un escalar ya calculado sobre el tramo
+final) — sin desfase de índices entre las funciones ni respecto a como
+las consume `computeIndicators()`.
+
+**Dos hallazgos que cualquier puerto tiene que respetar, no "corregir":**
+
+1. **`ema200` nunca es una EMA de 200 períodos con los datos reales de
+   hoy.** `emaArr(closes,200,true)` solo entra en la rama normal si
+   `closes.length>=200`. Los `n` reales confirmados (Pregunta 7/§1.10
+   arriba) son **120/100/96** para 1d/1h/15m — los tres por debajo de
+   200, en los tres timeframes. Eso significa que `ema200` cae
+   **siempre** en la rama `allowPartial`: su valor real es la **media
+   simple de todos los cierres disponibles** (120, 100 o 96, según el
+   TF), no una EMA de verdad. Un puerto que implemente "EMA de 200"
+   literalmente de manera matemáticamente correcta, sin replicar este
+   fallback exacto, dará un número distinto en todos los casos reales
+   de hoy — no es un caso borde raro, es el camino normal.
+2. **Dos familias de suavizado distintas, no una.** `emaArr`/`calcMACD`
+   usan EMA clásica (`α=2/(n+1)`); `calcRSI`/`calcATR`/`calcADX` usan
+   **Wilder** (`α=1/n`, equivalente a `(prev·(n-1)+x)/n`). Reutilizar
+   una sola función de suavizado para las dos familias — el atajo más
+   tentador al portar — da un número sutilmente distinto en RSI/ATR/ADX
+   sin lanzar ningún error, exactamente el patrón que ya costó
+   `risk_pct`/`risk_per_share` y `atrMax`.
+
+`calcVWAP` agrupa por fecha de **calendario UTC** (`toISOString().slice(0,10)`),
+no por sesión de NYSE en hora local — señalado para que un puerto lo
+reproduzca tal cual, no lo "corrija" a hora de Nueva York sin que sea
+una decisión explícita aparte.
 
 **Matiz al punto 1 (04/10/2026): `scan-data` y `scan-batch` devuelven las
 mismas velas, solo cambia el envoltorio.** Se compararon respuestas reales

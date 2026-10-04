@@ -301,9 +301,22 @@ Abreviatura usada: **DOC-IDEM** =
     `ema20`/`ema50` no pasan — qué hace, sin confirmar.
     `fetchBinanceKlines()` confirmada sin hallazgos nuevos (crypto ya
     excluido de esta automatización, prioridad baja).
-  - **Pregunta 10 añadida** a `check_autocapture_triggers.sh`: extrae
-    las 9 funciones de cálculo completas. **No se porta nada todavía ni
-    se reintenta la verificación** hasta tener ese texto literal.
+  - **Pregunta 10 confirmada (04/10/2026, `docs/pipeline/pregunta10_salida.txt`,
+    commit `62c5cb3`) — FONDO DE LA CADENA.** Las 9 funciones completas
+    (verificado programáticamente, balance de llaves), ninguna llama a
+    algo no confirmado (`calcMACD`→`emaArr`, ya una de las 9; `calcADX`
+    define su propio `wilder()` local, mostrado entero). **No hace falta
+    Pregunta 11 para el cálculo — se puede empezar a portar.** Detalle
+    completo (convención por función, qué devuelve cada una sin datos
+    suficientes) en el diseño §1.10. Dos hallazgos que cualquier puerto
+    debe reproducir tal cual, no "corregir": (a) con los `n` reales
+    (120/100/96, por debajo de 200 en los tres timeframes), `ema200`
+    **siempre** cae en el fallback de `emaArr` — es la media simple de
+    todos los cierres disponibles, nunca una EMA de 200 de verdad; (b)
+    hay **dos familias de suavizado**, EMA clásica (`emaArr`/`calcMACD`)
+    y Wilder (`calcRSI`/`calcATR`/`calcADX`) — reutilizar una función
+    para las dos da un número sutilmente distinto sin error, mismo
+    patrón que ya costó `risk_pct`/`risk_per_share` y `atrMax`.
   - **Verificado (04/10/2026): `snapshot_autocapture.py` NO tiene el bug
     de `results[0]`.** `main()` ya empareja cada resultado de
     `/api/scan-batch` por `item.get("ticker")` contra
