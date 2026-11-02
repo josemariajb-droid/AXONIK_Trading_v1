@@ -1,0 +1,1095 @@
+# Automatización de la captura de snapshots (reemplazo de `autoCaptureSnapshots()`)
+
+**Fecha:** 03/10/2026
+**Estado: IMPLEMENTADO (código real) — NO DESPLEGADO.** Bloqueante de
+"¿hace falta Playwright?" cerrado del todo (§1.4). Implementación en
+`services/snapshot-autocapture/` — pendiente de tu revisión antes de tocar
+el servidor, igual que con el fix de idempotencia.
+**Relacionado:** `docs/pipeline/2026-09-22_fix_idempotencia_ingesta.md` (en
+adelante **DOC-IDEM**) — el Addendum 2 de ese documento es la fuente de la
+evidencia sobre `autoCaptureSnapshots()` usada aquí. `docs/pipeline/BACKLOG.md`
+(en adelante **BACKLOG**) — entrada 2, cuya prioridad sube en este documento.
+
+---
+
+## 0. Qué puedo y qué no puedo verificar desde esta sesión
+
+Antes de entrar en el diseño: esta sesión **no tiene acceso al servidor
+Hetzner** (ni SSH ni HTTPS — verificado en la tarea anterior, bloqueado a
+nivel de política de red del propio entorno). Todo lo que sé sobre
+`autoCaptureSnapshots()` viene de **DOC-IDEM, Addendum 2 §1.2**, escrito por
+una sesión que sí tenía acceso de solo lectura al filesystem del Hetzner. No
+he leído yo mismo `/opt/axonik/scanner/index.html`. Lo marco explícitamente
+en cada punto de la sección 1 para no presentar una inferencia como una
+lectura directa del código — exactamente la disciplina que este proyecto ya
+exige en los documentos anteriores.
+
+---
+
+## 1. Qué hace `autoCaptureSnapshots()`
+
+### 1.1 Confirmado por DOC-IDEM (evidencia de primera mano, sesión con acceso al filesystem)
+
+- Vive en `/opt/axonik/scanner/index.html` (~línea 2690), servido por el propio
+  proxy en `:8002/scanner`.
+- Se ejecuta en **cada** `runScan()`. `runScan()` se dispara a mano o por el
+  auto-refresh opcional del cliente (`setAutoRefreshTimer`, cada 15 min
+  mientras la pestaña está visible — es decir, **ya es un timer**, solo que
+  vive en el navegador y depende de tener la pestaña abierta).
+- Captura automáticamente (etiqueta `AUTO_HIGH`) los tickers que pasan
+  `detectAutoTrigger`. Existe una ruta alternativa manual, el botón "Seguir"
+  (`MANUAL`, ~línea 2046), que queda fuera de esta automatización — sigue
+  siendo una acción humana deliberada y no se toca.
+- El efecto de red confirmado es `POST /api/snapshots` contra el mismo proxy
+  (`market_data_proxy.py::create_snapshot`): es el único endpoint de alta de
+  snapshots que existe, y DOC-IDEM confirma explícitamente que
+  `autoCaptureSnapshots` "solo cuenta las respuestas con `created:true`" —
+  es decir, interpreta el JSON de respuesta de ese POST para su propia
+  contabilidad en pantalla (el aviso de "N señales capturadas").
+- Guard de cliente: `state.followedToday`, cargado por `loadFollowedToday()`
+  con `GET /api/snapshots?status=OPEN&since=<00:00 UTC de hoy>`. Es una
+  petición HTTP normal contra el mismo proxy, sin nada propio del navegador
+  más allá de guardar el resultado en una variable JS.
+- Universo de endpoints de escritura del proxy que ya existen y que una
+  réplica headless usaría (DOC-IDEM, Hallazgo 4): `POST /api/snapshots`,
+  `GET /api/snapshots`, y en algún punto previo del flujo `POST
+  /api/scan-batch` (es el endpoint que trae los datos de mercado que
+  `runScan()` evalúa; no está descrito con más detalle en DOC-IDEM, pero es
+  el único candidato entre los endpoints inventariados que puede alimentar un
+  escaneo de ese tamaño).
+
+### 1.2 Estado tras la 1ª pasada (`docs/pipeline/check_autocapture_triggers.sh`)
+
+Tres preguntas originales, resueltas con el script de solo lectura contra el
+código real del Hetzner (ejecutado por el usuario, no por esta sesión — sigo
+sin acceso directo):
+
+1. **`detectAutoTrigger` — CONFIRMADO: comparación pura.** Solo compara
+   scores ya calculados, no calcula nada por su cuenta. Esto desplazó la
+   pregunta a `evaluateTicker()` (quien produce esos scores), que en la 2ª
+   pasada **también se confirmó como orquestación pura sobre datos**. El
+   bloqueante real que queda son las cuatro piezas que `evaluateTicker()`
+   llama (`NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`,
+   `tickerHardNo`) — ver §1.4, verificación en curso.
+2. **Universo de tickers de `runScan()` — CONFIRMADO: `localStorage`, no un
+   endpoint.** Cerrado como decisión de producto, no como hallazgo técnico —
+   ver §1.4.
+3. **Sesión/autenticación de navegador** — sin revisar explícitamente en esta
+   pasada (el script la cubre, pero el resultado no se ha reportado todavía).
+   Sigue siendo improbable, coherente con que el proxy no exige autenticación
+   en ningún endpoint (BACKLOG entrada 2), pero no lo marco como cerrado
+   hasta tener ese resultado también.
+
+### 1.3 Conclusión de esta sección (actualizada)
+
+Dos de las tres preguntas originales ya no son especulación, y
+`evaluateTicker()` tampoco. Lo que decide "Python simple" vs. "Playwright"
+ahora es un grep acotado a cuatro piezas concretas, no una función más por
+confirmar — ver §1.4 para el detalle y qué falta.
+
+---
+
+## 1.4 Addendum — 1ª y 2ª pasada de verificación
+
+**Universo de tickers — CERRADO.** Confirmado que `runScan()` toma el
+universo de `localStorage` del navegador, no de un endpoint. **Decisión de
+producto (tuya, cerrada):** el proceso automático no depende de
+`localStorage` de ningún navegador concreto — usa como universo **los
+scanners en estado `EN_PRUEBAS` o `PRODUCCION` de `02_SCANNERS`**, leídos
+directamente de esa hoja/tabla en cada ejecución. Esto no es una inferencia
+ni una alternativa "probablemente correcta": es la decisión que cierra la
+pregunta 2 de §1.2, documentada aquí para que el esqueleto de §2.5
+(`cargar_universo_de_scanners()`) tenga una especificación concreta en vez de
+un comentario de "pendiente de confirmar". Implicación directa para la
+implementación: `cargar_universo_de_scanners()` debe leer `02_SCANNERS`
+filtrando por `ESTADO IN ('EN_PRUEBAS', 'PRODUCCION')` — no replicar ni leer
+`localStorage` de ninguna sesión de navegador.
+
+**`detectAutoTrigger` — sin cambios respecto a lo ya confirmado:**
+comparación pura sobre scores recibidos.
+
+**`evaluateTicker()` — 2ª pasada, CONFIRMADO: orquestación pura sobre `ctx`
+(datos), sin DOM.** Recibido y revisado: no toca nada propio del navegador,
+solo organiza el cálculo del score a partir del contexto de datos que
+recibe. Pero `evaluateTicker()` llama a otras piezas
+(`NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`,
+`tickerHardNo`) que no se habían revisado todavía — confirmar que
+`evaluateTicker()` en sí es limpia no basta si delega en algo que no lo es.
+
+**Verificación dirigida (Pregunta 1c) — CERRADA: las cuatro piezas salen
+limpias.** `NYSE_STRATEGIES`, `CRYPTO_STRATEGIES`, `applyEventAdjustments`
+y `tickerHardNo` no contienen `document.`, `window.`, `canvas`, `chart.`,
+`getContext` ni un `fetch(` interno. **Bloqueante de "¿hace falta
+Playwright?" cerrado del todo:** `evaluateTicker()` y todo lo que llama es
+aritmética/orquestación pura sobre datos — un script Python sin navegador
+es viable.
+
+### 1.5 Implementación real entregada — Pregunta 4 ejecutada, 3 puntos corregidos, 1 gap real descubierto
+
+`services/snapshot-autocapture/`: `snapshot_autocapture.py`,
+`axonik-snapshot-autocapture.service`/`.timer`, `README.md`.
+**No desplegado** — pendiente de tu revisión.
+
+**Los tres puntos de la Pregunta 4, confirmados contra el código real (no
+prosa) y corregidos:**
+
+1. **Shape de `POST /api/scan-batch` — corregido.** Real:
+   `{"results": [{"ticker", "timestamp", "data", "error"?}]}`. `fetch_scan_batch()`
+   ya no asume esta forma, y el bucle principal maneja `"error"` por-ticker
+   como una omisión de ese ticker, no como un fallo del batch completo.
+2. **`risk_pct` — MAL, corregido a `risk_per_share`.** `entry_price`/
+   `stop_price` sí coincidían con la estimación original.
+3. **Umbral de `detectAutoTrigger()` — corregido de un único valor a dos
+   ramas reales**, implementadas en `evaluate_auto_trigger()`:
+   `AUTO_HIGH` (una estrategia, score≥90) y `AUTO_MULTI` (≥2 estrategias
+   del mismo grupo, score≥80 cada una). "Mismo grupo" se interpreta aquí
+   como mismo `temporal_group` — es una lectura de la descripción, no una
+   cita literal de `detectAutoTrigger()`; dado que la paráfrasis de
+   `risk_pct` ya introdujo un error real una vez, esta agrupación debería
+   confirmarse contra el código antes de fiarse de ella en producción.
+
+**Gap real descubierto al corregir el punto 1, no uno de los tres pedidos:**
+el shape real de `scan-batch` confirma que `"data"` son indicadores EN
+BRUTO, no un score precalculado. Este script dependía de
+`ticker_data.get("score")`, que nunca existió en la respuesta real — era
+una asunción incorrecta, no una aproximación válida. El cálculo del score
+(`evaluateTicker()` + `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES` +
+`applyEventAdjustments` + `tickerHardNo`) nunca se portó: solo se había
+confirmado que esas cinco piezas son "limpias" (sin `document.`/`window.`/
+`canvas`/`fetch` interno — Pregunta 1c), nunca se transcribió su
+**contenido**. `evaluate_ticker()` es ahora un `NotImplementedError`
+explícito, verificado que falla ruidoso en el primer ticker (no silencia
+el fallo ni finge un resultado — probado con mocks, incluido un ticker con
+`"error"` que sí se omite correctamente antes de llegar ahí).
+
+**Por esto no se escribe todavía el protocolo de verificación completo**
+que cerraría esta tarea: ejecutarlo contra el proxy real fallaría de
+inmediato en `evaluate_ticker()`, y documentar un protocolo de prueba
+sobre una pieza que admite no estar implementada sería exactamente el
+tipo de falsa certeza que este diseño ha evitado en todo lo anterior.
+Para cerrar esto de verdad hacen falta los **cuerpos literales** de las
+cinco piezas — no otro resumen en prosa, por la misma razón que
+`risk_per_share` ya se perdió en una paráfrasis.
+
+### 1.6 Bind a 127.0.0.1 (hallazgo 2 del backlog) — patch listo, no aplicado
+
+Decisión tomada: bind en vez de token (BACKLOG entrada 2, diseño §3.4 de
+este documento). Línea actual confirmada en `market_data_proxy.py`
+(DOC-IDEM, Hallazgo 4): `uvicorn.run(app, host="0.0.0.0", port=8002)` →
+`host="127.0.0.1"`. Patch de una línea, pasos de despliegue y verificación
+completos en `services/snapshot-autocapture/README.md` (incluye el efecto
+colateral sobre el acceso manual a `/scanner` desde fuera del host, que
+queda como decisión aparte).
+
+### 1.7 Cadena de dependencias cerrada: 22 piezas, texto literal, fondo confirmado
+
+Tras 4 rondas de extracción dirigida (Preguntas 5, 5b, 5c, 5d — cada una
+disparada porque la anterior reveló una capa más), la cadena de
+dependencias de `evaluateTicker()` está cerrada con **22 piezas**, todas
+con texto literal (no resumen en prosa) en
+`docs/pipeline/pregunta5_5b_salida.txt`, `pregunta5c_salida.txt` y
+`pregunta5d_salida.txt`:
+
+| Capa | Piezas |
+|---|---|
+| Orquestación | `evaluateTicker`, `detectAutoTrigger` |
+| Selección por modo | `NYSE_STRATEGIES`, `CRYPTO_STRATEGIES` (arrays fijos de 7+3 funciones) |
+| Ajustes/veto | `applyEventAdjustments`, `tickerHardNo` |
+| Cálculo por estrategia | `evalST01`, `evalST05`, `evalST06`, `evalST09`, `evalST11`, `evalST15`, `evalST16`, `evalSC01`, `evalSC02`, `evalSCPB` |
+| Normalización/construcción | `mkResult`, `mkNA`, `finalizeVerdict`, `f` |
+| Configuración (fondo) | `STRATEGY_META`, `MAX_RAW_SCORE` |
+
+`MAX_RAW_SCORE` (Pregunta 5d) es un objeto literal de 11 pares
+`id: número` — sin llamadas, sin referencias a nada más. Es el fondo
+real: no hay quinta capa.
+
+**Puerto a Python entregado:** `services/snapshot-autocapture/evaluate_ticker_logic.py`,
+1:1 contra el texto literal de las 22 piezas. 10 pruebas en
+`test_evaluate_ticker_logic.py` (todas pasan), incluida una diseñada
+para fallar si alguien reintrodujera la unión de ramas en vez de la
+prioridad estricta `AUTO_MULTI`→`AUTO_HIGH` que `detectAutoTrigger`
+tiene en realidad (corregido respecto al diseño original de
+`evaluate_auto_trigger()` en `snapshot_autocapture.py`, que hacía unión).
+
+### 1.8 Hallazgo estructural al portar — decisión pendiente antes de cablear el endpoint
+
+Leyendo el texto literal de `evaluateTicker()` (no inferido):
+
+```js
+const fns = mode==='NYSE' ? NYSE_STRATEGIES : CRYPTO_STRATEGIES;
+let strategies = fns.map(fn=>{ ... });
+```
+
+**`evaluateTicker()` evalúa TODAS las estrategias fijas de un modo (7 NYSE
+o 3 crypto) en una sola llamada por *ticker* — no una llamada por
+(ticker, scanner).** `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES` son arrays
+fijos en el código; no se filtran por `02_SCANNERS.ESTADO` en tiempo de
+ejecución. Esto no coincide con el diseño de §2.5/BACKLOG entrada 5 tal
+como estaba: `cargar_universo_de_scanners()` (EN_PRUEBAS/PRODUCCION de
+`02_SCANNERS`) decidía *qué estrategias* evaluar — pero en el código real,
+qué estrategias se evalúan no es una decisión de datos en tiempo de
+ejecución, es fijo en `NYSE_STRATEGIES`/`CRYPTO_STRATEGIES`.
+
+Dato adicional: `ST-04` tiene entrada en `STRATEGY_META` y `MAX_RAW_SCORE`,
+pero **no está en el array `NYSE_STRATEGIES`** — hoy no se evalúa en
+ningún `autoCaptureSnapshots()`, aunque existe en la configuración y
+tiene una operación real en `05_OPERACIONES` (Fase 0A, GOOGL/ST-04, el
+único WIN plausible de toda la auditoría). No lo interpreto más allá de
+señalarlo — es un dato para ti, no una decisión que tome yo.
+
+**Lo que esto cambia:** "universo" para esta automatización probablemente
+tiene que ser *qué TICKERS evaluar* (una lista de acciones/criptos), no
+*qué estrategias* — las estrategias ya vienen fijas por `mode`. La
+decisión de `02_SCANNERS.ESTADO` (EN_PRUEBAS/PRODUCCION) no tiene un
+lugar obvio en este mecanismo tal como está escrito hoy en el navegador.
+
+**No he tocado `snapshot_autocapture.py` para resolver esto por mi
+cuenta.** Antes de cablear `POST /api/evaluate-ticker`, necesito que
+decidas: (a) de dónde sale la lista de tickers a evaluar (¿un universo
+fijo tipo S&P 500 + las criptos ya seguidas? ¿algo que ya exista en
+Postgres/Sheets?), y (b) qué hacemos con la lectura de `02_SCANNERS` que
+ya estaba diseñada — ¿se descarta, o sigue teniendo un papel distinto
+(p.ej. qué *tickers* trackea cada scanner, no qué función ejecutar)?
+
+**Verificación de `11_LISTAS` como alternativa (04/10/2026) — descartada.**
+Contenido real leído directamente (`11_LISTAS.csv`, snapshot del
+21/09/2026): son 22 columnas `rng_*` de catálogo para desplegables
+(mercados, categorías, timeframes, indicadores, sectores...), ninguna con
+símbolos de ticker individuales. No sirve como universo de tickers tal
+cual existe hoy. Detalle en `docs/pipeline/BACKLOG.md`, entrada 5.
+
+### 1.9 Decisión (04/10/2026): hoja nueva `14_UNIVERSO_TICKERS` — esquema propuesto, sin crear todavía
+
+**Decisión tuya, cerrada:** el universo de tickers vive en una hoja nueva
+del Decision Engine, no en JSON estático ni en `localStorage`. Sustituye
+a `cargar_universo_de_scanners()` (§1.4/§2.5), que queda descartada junto
+con la lectura de `02_SCANNERS.ESTADO` para este propósito — `02_SCANNERS`
+sigue existiendo para lo que ya hacía (catálogo de scanners), simplemente
+deja de ser la fuente del universo de *tickers* de esta automatización.
+
+**Esquema final, aprobado 04/10/2026 (NO creado todavía en el Excel real —
+ver bloqueante de herramienta más abajo):**
+
+| Columna | Tipo | Valores | Notas |
+|---|---|---|---|
+| `TICKER` | texto | p.ej. `AAPL`, `GOOGL`, `BTC` | símbolo exacto, el mismo que usan `/api/scan-batch` y `05_OPERACIONES` |
+| `MERCADO` | enum | `NYSE` \| `CRYPTO` | mismo valor que espera `evaluate_ticker_logic.evaluate_ticker(mode=...)` — decide qué array fijo de estrategias corre (`NYSE_STRATEGIES` o `CRYPTO_STRATEGIES`, §1.7) |
+| `ESTADO` | enum | `ACTIVO` \| `PAUSADO` | misma lógica de activación que ya usa `02_SCANNERS.ESTADO` (un valor "en marcha" filtra, el resto no) — enum reducido a dos valores porque aquí no hay un estado intermedio tipo `EN_PRUEBAS` |
+| `FECHA_ALTA` | fecha (ISO `AAAA-MM-DD`) | — | cuándo se añadió el ticker al universo; trazabilidad, no se usa para filtrar |
+| `NOTAS` | texto libre | — | añadido 04/10/2026, mismo patrón que `05_OPERACIONES.NOTAS`; para anotar por qué entró un ticker si hace falta auditarlo más adelante. No se usa para filtrar, solo lectura humana |
+
+**Entrada añadida a `00_README` (misma tabla que documenta las otras 13
+hojas — columnas reales `HOJA | DESCRIPCIÓN | FUNCIÓN | ESTADO`,
+confirmadas leyendo el `.xlsx` cacheado de la auditoría Fase 0A, snapshot
+21/09/2026):**
+
+| HOJA | DESCRIPCIÓN | FUNCIÓN | ESTADO |
+|---|---|---|---|
+| `14_UNIVERSO_TICKERS` | Universo de tickers evaluados por la captura automática de snapshots (`TICKER`, `MERCADO`, `ESTADO`, `FECHA_ALTA`, `NOTAS`) | Config operativa | ✅ |
+
+Nota sobre esa misma lectura del `.xlsx` cacheado: la tabla de `00_README`
+en el snapshot del 21/09/2026 documenta hasta `12_CONFIGURACION` — no tiene
+fila para `13_INSTRUCCIONES`, aunque esa pestaña ya existe en el libro.
+Puede que se haya corregido desde entonces (es una copia de hace 2
+semanas, no una lectura en vivo); lo señalo porque es exactamente el tipo
+de hueco que esta tarea de añadir la fila de `14_UNIVERSO_TICKERS` busca
+evitar — si sigue faltando, es una fila más a añadir, fuera del alcance de
+esta tarea salvo que quieras incluirla en la misma pasada.
+
+**Bloqueante real para ejecutar el paso 1 (crear la hoja): esta sesión no
+tiene ninguna herramienta capaz de escribir en el Google Sheet real.**
+El `Google_Drive` MCP conectado aquí solo expone operaciones de archivo
+completo (`create_file` para crear un archivo nuevo, `update_file`
+limitado a título/carpeta, `search_files`/`read_file_content` de solo
+lectura) — ninguna permite añadir una pestaña ni escribir filas dentro de
+un spreadsheet ya existente. Las escrituras reales de producción a este
+mismo Sheet las hace `gspread` con la service account de
+`/opt/axonik/scripts/credentials.json`, que vive solo en el Hetzner — esta
+sesión confirmó en la tarea anterior que no tiene acceso de red a ese
+servidor (ni SSH ni HTTPS). No hay ninguna combinación de mis herramientas
+actuales que pueda crear la pestaña ni la fila de `00_README` por mí
+mismo en el documento real.
+
+**Lo que sí puedo entregar: el contenido exacto, listo para copiar y
+pegar**, para que lo apliques tú en dos pasos de 1 minuto cada uno en el
+Decision Engine real:
+1. En `00_README`, añadir la fila de la tabla de arriba.
+2. Crear la pestaña `14_UNIVERSO_TICKERS` con cabecera
+   `TICKER | MERCADO | ESTADO | FECHA_ALTA | NOTAS` y 0 filas de datos —
+   la pueblas tú a mano con los tickers iniciales, como ya dijiste.
+
+**Hecho (04/10/2026), confirmado por el usuario contra el archivo
+descargado de Drive, no una suposición:** ambos pasos aplicados —
+`14_UNIVERSO_TICKERS` existe con esas cabeceras exactas, vacía; la fila
+de `00_README` también está.
+
+**Código actualizado en consecuencia:**
+`cargar_universo_de_tickers()` en `snapshot_autocapture.py` reemplaza a
+`cargar_universo_de_scanners()`/`02_SCANNERS`, leyendo
+`14_UNIVERSO_TICKERS` y filtrando `ESTADO='ACTIVO'`. Esto cierra también
+el hallazgo estructural de §1.8: al tener el universo como ticker+mercado
+directo (no scanner+ticker), `main()` pasa a hacer una llamada por
+*ticker*, que es el modelo real de `evaluateTicker()` — ya no hace falta
+el cruce artificial con scanners que tenía el diseño anterior. De paso se
+eliminó la reimplementación local (con el bug de unión de ramas en vez de
+prioridad estricta) de la detección de disparo: ahora se llama
+directamente a `evaluate_ticker_logic.detect_auto_trigger()`, ya
+corregido y con pruebas unitarias, en vez de mantener una tercera copia
+de esa lógica en el script.
+
+**Dos puntos siguen sin resolver, explícitamente fuera del alcance de
+este paso** (quedan para el paso de cablear el endpoint, §4 punto 1):
+- El shape de *petición* real de `POST /api/scan-batch`: se cambió el
+  campo de `"scanner_ids"` (ya no aplica, no hay scanners en el universo
+  nuevo) a `"tickers"`, por ser la lectura obvia dado el universo nuevo —
+  pero es una suposición, no una cita literal del Pydantic real.
+  Confirmar contra el código antes del `--dry-run`, mismo criterio que
+  con `risk_pct`/`risk_per_share`.
+- De dónde salen `entry_price`/`stop_price`/`risk_per_share` para
+  `construir_payload_snapshot()`: no están en el shape de
+  `evaluate_ticker_logic.evaluate_ticker()` (confirmado leyendo su
+  código — solo produce `score`/`verdict`/`factors` por estrategia).
+  `evaluate_ticker()` en `snapshot_autocapture.py` sigue siendo un
+  `NotImplementedError` explícito hasta que esto y el endpoint existan.
+
+**Nombre de la hoja:** `14_UNIVERSO_TICKERS`, siguiente número libre tras
+`13_INSTRUCCIONES` (00 a 13 ya existen), siguiendo la convención
+`NN_NOMBRE_EN_MAYUSCULAS` del resto del documento.
+
+**Lectura desde `snapshot_autocapture.py` (una vez creada la hoja):**
+`cargar_universo_de_tickers()` reemplaza a `cargar_universo_de_scanners()`:
+lee `14_UNIVERSO_TICKERS` vía `gspread` (misma librería y credenciales que
+ya usa el script), filtra `ESTADO == 'ACTIVO'`, y agrupa por `MERCADO` para
+decidir qué `mode` pasar a `evaluate_ticker()`. No hay cambio en cómo se
+llama al proxy aparte de esto — sigue siendo `POST /api/evaluate-ticker`
+(pendiente de cablear, punto (2) de "Para cerrarlo" en BACKLOG entrada 5).
+
+**No se crea la hoja en el Excel real todavía.** Esto es solo el esquema
+propuesto para tu revisión. Una vez aprobado: (a) se crea la hoja vacía
+(solo cabeceras) en el Decision Engine real, (b) tú la pueblas
+manualmente con los tickers que decidas — no lo hago yo —, y (c) se
+actualiza el código de `snapshot_autocapture.py` para leer de ahí en vez
+de `02_SCANNERS`.
+
+**Hecho (04/10/2026):** hoja real creada y poblada por ti con 17 tickers
+(`AAPL, MSFT, NVDA, GOOGL, AVGO, AMZN, META, AMD, INTC, QCOM, MU, TSM,
+PLTR, LLY, NVO, PFE, MRNA`), verificado contra el archivo real. Código
+de `cargar_universo_de_tickers()` actualizado (ver §1.9 más abajo).
+También se verificó, a petición tuya, que el ID del Decision Engine
+cambió (de `1ZEbgi7dBE-3P9gDmMj8NNvZwTAsrofY5` a
+`1oiI0itleTSzIznLNdY5yHcZ4K6Ofd6qq`) sin dejar rastro del ID antiguo
+hardcodeado en este repo (grep + `git log --all -S` contra todo el
+historial: 0 coincidencias — el script y el README solo usan la
+variable de entorno `AXONIK_DECISION_ENGINE_SHEET_ID`, nunca un literal)
+ni en el servidor real (verificado por ti con grep contra `/etc/axonik/`
+y `/opt/axonik/`).
+
+### 1.10 Paso 3 (04/10/2026): `POST /api/evaluate-ticker` — cableado parcial
+
+**Lado cliente, hecho.** `evaluate_ticker()` en `snapshot_autocapture.py`
+ya no es `NotImplementedError`: hace el `POST /api/evaluate-ticker` real
+con el shape que espera `evaluate_ticker_logic.evaluate_ticker()`
+(`ticker/mode/ind/funda/settings/btc_gate_on/insider_summary`), y pasa la
+respuesta directa a `evaluate_ticker_logic.detect_auto_trigger()`.
+Verificado con un smoke test con `requests.post` mockeado: el flujo
+completo encaja sin errores (`evaluate_ticker()` →
+`detect_auto_trigger()` → `construir_payload_snapshot()`).
+
+**Pregunta 6 confirmada contra el código real (04/10/2026,
+`docs/pipeline/pregunta6_salida.txt`, commit `2b300ac`):**
+- **6a/6b:** `app` es el nombre real de la variable FastAPI; Pydantic v2
+  (`BaseModel, Field`, sintaxis `tipo | None`); `HTTPException` ya
+  importado de `fastapi`. Ningún endpoint de escritura usa `Depends` ni
+  `response_model` — mismo estilo simple que `create_snapshot`/
+  `scan_batch`: `@app.post("/api/...")` seguido de
+  `async def handler(req: Modelo):`. Confirmado literal, ya no una
+  suposición sobre cómo pegar el endpoint.
+- **6c:** `ScanBatchRequest.tickers` confirma que `fetch_scan_batch()`
+  ya usaba el campo correcto — no era solo una suposición con suerte.
+- **6d:** `DEFAULT_SETTINGS` real del navegador (línea 671 de
+  `index.html`): `{capital:10000, riskPct:0.5, priceMin:8, atrMax:4,
+  rvolMin:1}`. **El placeholder de `SETTINGS` en
+  `snapshot_autocapture.py` tenía `atrMax=6` — era incorrecto, corregido
+  a 4.** Son defaults del navegador, editables en su UI
+  (`settingMap`, línea 2480) y persistidos solo en su `localStorage` —
+  si el usuario los cambió a mano ahí, no hay forma de que esta
+  automatización lo sepa; no existe una fuente server-side única de
+  esto hoy.
+- De paso, la misma salida re-confirmó literal el cuerpo de
+  `detectAutoTrigger()`: agrupa por `s.group` (no un campo separado
+  "temporal_group"), tal como ya asumía `evaluate_ticker_logic.py` — se
+  quita la salvedad de "lectura, no cita literal" de §1.5.
+
+**Lado servidor, código final listo, todavía NO aplicado.**
+`evaluate_ticker_endpoint.py` actualizado con el endpoint real
+(ya no comentado) y `SETTINGS` corregido en `snapshot_autocapture.py`.
+Instrucciones exactas de dónde pegarlo en `market_data_proxy.py`
+(incluido copiar `evaluate_ticker_logic.py` al mismo directorio del
+servidor) en `services/snapshot-autocapture/README.md`, Paso 1b — esta
+sesión no tiene acceso al Hetzner para aplicarlo ella misma.
+
+**Verificación navegador-vs-endpoint: EJECUTADA, encontró un bug real
+— BLOQUEADA, no reintentar todavía.** Con el Paso 1b aplicado al
+servidor real y `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` ejecutada
+contra AAPL real: `KeyError: 'price'`. El `d = ind['1d']` que devuelve
+`/api/scan-batch` real solo tiene `candles` y `periods` — **no**
+`price`, ni ninguno de los campos derivados que los 10 `evalXX`
+esperan directamente en `d` (`ema20/50/200`, `rsi`, `macdHist`,
+`rvol`, `gapPct`, `adx`, `diPlus`/`diMinus`...). Esto confirma el gap
+que ya se señalaba más abajo (shape exacto de `ind`), pero más
+grave: no es que falte un campo aislado, es que `evaluateTicker()` no
+recibe el `"data"` crudo de `scan-batch` en absoluto.
+
+**Sospecha, sin confirmar todavía:** en `runScan()` (ya extraída,
+Pregunta 2a), `evaluateTicker()` recibe `rEntry.ind` — no la respuesta
+cruda del batch — que viene de `fetchAllNyse()`/`fetchAllCrypto()`,
+**nunca extraídas ni leídas hasta ahora**. Es probable que esas
+funciones calculen `price` y el resto de indicadores derivados a
+partir de `candles`/`periods` antes de pasarle los datos a
+`evaluateTicker()`. Si se confirma, el endpoint nuevo (y
+`evaluate_ticker()` en `snapshot_autocapture.py`, que hoy reenvía el
+`"data"` crudo tal cual) tienen que replicar esa misma transformación.
+
+**Pregunta 7 confirmada (04/10/2026, `docs/pipeline/pregunta7_salida.txt`,
+commit `6ec4f00`): `fetchAllNyse`/`fetchAllCrypto` NO derivan `price`
+ellas mismas.** Texto literal:
+
+```js
+async function fetchAllNyse(tickers, onProgress){
+  const results = {};
+  for (let i=0;i<tickers.length;i+=4){
+    const batch = tickers.slice(i,i+4);
+    await Promise.all(batch.map(async t=>{
+      try{ results[t] = {ind: await fetchNyseTicker(t), funda:null, insiders:null}; }
+      catch(e){ results[t] = {ind:null, funda:null, insiders:null, error: e.message||'error'}; }
+    }));
+    onProgress(...); await sleep(500);
+  }
+  // ... dos bucles más iguales, para funda (fetchFundamentals) e insiders (fetchInsiders)
+  return results;
+}
+```
+
+Es pura orquestación de batching (lotes de 4 tickers NYSE / 3 crypto,
+con `sleep(500)` entre lotes — rate limiting, no lógica de negocio) que
+**delega** en `fetchNyseTicker(t)`/`fetchCryptoTicker(t)` para `ind`, y
+por separado en `fetchFundamentals(t)`/`fetchInsiders(t)` para
+`funda`/`insiders`. **Ninguna de esas cuatro funciones está entre las
+piezas ya confirmadas** — exactamente el mismo patrón que ya pasó con
+`mkResult`/`mkNA` y `MAX_RAW_SCORE`: cada capa que se abre revela una
+más. La transformación sospechada (derivar `price` y el resto de
+indicadores a partir de `candles`/`periods`) casi con certeza vive
+dentro de `fetchNyseTicker()`/`fetchCryptoTicker()`, no en
+`fetchAllNyse`/`fetchAllCrypto`.
+
+**Pregunta 8 confirmada (04/10/2026, `docs/pipeline/pregunta8_salida.txt`,
+commit `add701f`) — HALLAZGO MAYOR.** Texto literal:
+
+```js
+async function fetchNyseTicker(ticker){
+  const res = await fetch(`/api/scan-data?ticker=${encodeURIComponent(ticker)}&timeframes=1d,1h,15m`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  const ind = {};
+  for (const tf of ['1d','1h','15m']){
+    const tfData = json.data && json.data[tf];
+    ind[tf] = (tfData && tfData.candles && !tfData.error) ? computeIndicators(tfData.candles, tf) : null;
+  }
+  return ind;
+}
+```
+
+Dos cosas cambian el diagnóstico de fondo:
+
+1. **`fetchNyseTicker()` no llama a `/api/scan-batch`** (el endpoint que
+   usa `snapshot_autocapture.py` y sobre el que se diseñó
+   `POST /api/evaluate-ticker`) — llama a
+   `GET /api/scan-data?ticker=...`, un endpoint **distinto**, por
+   ticker individual, que trae `candles` en bruto.
+2. Esos `candles` se pasan a **`computeIndicators(candles, tf)`**, que
+   es quien calcula `price`/`ema20/50/200`/`rsi`/`macdHist`/`rvol`/
+   `gapPct`/`adx`/etc. — todo lo que los 10 `evalXX` esperan
+   directamente en `ind[tf]`. `fetchCryptoTicker()` usa la misma
+   función sobre velas de `fetchBinanceKlines()`. `fetchFundamentals`/
+   `fetchInsiders` tampoco usan los endpoints `*-batch`: llaman a
+   `GET /api/fundamentals?ticker=`/`GET /api/insiders?ticker=`
+   (singular). `sleep()` confirmado trivial — cerrado, sin más llamadas.
+
+**`computeIndicators()` nunca se había identificado como dependencia
+hasta ahora, y es casi con certeza la pieza más grande de todo este
+diseño** — cálculo real de indicadores técnicos (EMA/RSI/MACD/ADX/
+RVOL...), no orquestación ni scoring como todo lo anterior. Esto
+significa que el contrato de entrada de `POST /api/evaluate-ticker`
+(recibir `ind` ya calculado) **nunca tuvo una fuente server-side real**:
+ni `/api/scan-batch` ni nada en `snapshot_autocapture.py` calculan
+estos campos hoy — solo devuelven `candles`/`periods` en bruto. No es
+un campo que falte, es una función entera que falta portar (o una
+decisión de que el endpoint reciba `candles` en bruto y calcule él
+mismo, server-side, para no duplicar ese cálculo en dos sitios — a
+decidir una vez se vea el cuerpo real).
+
+**Pregunta 9 confirmada (04/10/2026, `docs/pipeline/pregunta9_salida.txt`,
+commit `409d7a7`).** Texto literal:
+
+```js
+function computeIndicators(candles, tf){
+  if (!candles || candles.length < 5) return null;
+  const closes = candles.map(c=>c.c), highs = candles.map(c=>c.h),
+        lows = candles.map(c=>c.l), volumes = candles.map(c=>c.v);
+  const price = closes[closes.length-1];
+  const ema20 = emaArr(closes,20)[closes.length-1];
+  const ema50 = emaArr(closes,50)[closes.length-1];
+  const ema200 = emaArr(closes,200,true)[closes.length-1];
+  const rsi = calcRSI(closes,14);
+  const [macd, macdSignal, macdHist, macdHistPrev] = calcMACD(closes);
+  const atr = calcATR(highs,lows,closes,14);
+  const atrPct = (atr && price) ? atr/price*100 : NaN;
+  const rvol = calcRVOL(volumes);
+  const adxR = calcADX(highs,lows,closes,14);
+  const compression = calcCompression(candles,6);
+  const gapPct = tf==='1d' ? calcGapPct(candles) : NaN;
+  const vwap = tf==='15m' ? calcVWAP(candles) : NaN;
+  return {price, ema20, ema50, ema200, rsi, macd, macdSignal, macdHist, macdHistPrev,
+          atr, atrPct, rvol, adx:adxR.adx, diPlus:adxR.diPlus, diMinus:adxR.diMinus,
+          compression, gapPct, vwap, candles};
+}
+```
+
+Respuesta a las cuatro preguntas pendientes:
+
+1. **Completitud:** sí — cruzando este objeto de retorno contra cada
+   campo que leen los 10 `evalXX` (confirmados literal en Pregunta 5b) y
+   `tickerHardNo()` (Pregunta 5), `computeIndicators()` produce todos:
+   `price`, `ema20/50/200`, `rsi`, `macdHist`/`macdHistPrev`, `atrPct`
+   (lo usa `tickerHardNo`), `rvol`, `adx`/`diPlus`/`diMinus`,
+   `compression`, `gapPct`, `vwap`, y además devuelve `candles` sin
+   modificar (lo necesita `evalST09` directamente, no un derivado).
+   Nada de lo que los `evalXX` esperan queda sin cubrir.
+2. **Campos que devuelve:** los 19 del objeto de retorno de arriba.
+   Nota: `gapPct` solo se calcula para `tf==='1d'` (si no, `NaN`) y
+   `vwap` solo para `tf==='15m'` — coherente con que `evalST05` solo lee
+   `d.gapPct` y `evalST01`/`evalST05`/`evalST09`/`evalST16` solo leen
+   `m.vwap`.
+3. **Funciones auxiliares que faltan:** **9**, ninguna confirmada
+   todavía — `emaArr`, `calcRSI`, `calcMACD`, `calcATR`, `calcRVOL`,
+   `calcADX`, `calcCompression`, `calcGapPct`, `calcVWAP`. Son las que
+   implementan la aritmética real de indicadores técnicos — el tipo de
+   código donde una convención distinta (suavizado de Wilder vs. simple,
+   semilla con SMA vs. sin semilla, ventana de calentamiento) da un
+   número ligeramente distinto sin lanzar ningún error. Mismo riesgo que
+   ya se materializó con `risk_pct`/`risk_per_share` y `atrMax`, pero
+   aquí con superficie mucho mayor (9 funciones, no 1 campo).
+4. **Convención de suavizado:** señalada, no confirmada —
+   `emaArr(closes,200,true)` pasa un tercer argumento `true` que
+   `emaArr(closes,20)`/`emaArr(closes,50)` no pasan. Sin ver el cuerpo
+   de `emaArr()`, no se puede saber qué hace ese flag (semilla distinta,
+   tratamiento especial cuando hay menos de 200 velas, u otra cosa) —
+   exactamente lo que pide confirmar la Pregunta 10.
+
+**`fetchBinanceKlines()` confirmada, sin más hallazgos** (crypto ya
+excluido de esta automatización por `EXCLUDED_MARKETS`, prioridad baja):
+reintentos con `sleep(800)`, mapea el array de Binance a
+`{t,o,h,l,c,v}` con `t` en segundos epoch (`Math.floor(k[0]/1000)`) —
+mismo shape de vela que NYSE, consistente con que ambas rutas alimentan
+la misma `computeIndicators()`. `BINANCE_BASE` es una constante de URL,
+no vista todavía, trivial y no bloqueante.
+
+**Pregunta 10 confirmada (04/10/2026, `docs/pipeline/pregunta10_salida.txt`,
+commit `62c5cb3`) — FONDO DE LA CADENA.** Las 9 funciones, completas
+(balance de llaves verificado programáticamente, no a ojo — ninguna
+corte de seguridad), y **ninguna llama a algo que no esté ya en el
+texto** (`calcMACD` llama a `emaArr`, una de las propias 9; `calcADX`
+define su propio `wilder()` local, mostrado entero dentro de su cuerpo,
+no una dependencia externa). **No hace falta Pregunta 11 para el
+cálculo — a partir de aquí se puede empezar a portar.**
+
+| Función | Convención de suavizado | Si faltan velas |
+|---|---|---|
+| `emaArr(prices,period,allowPartial)` | EMA clásica, `k=2/(period+1)`, semilla = SMA de los primeros `period` valores | `allowPartial` falso → array de `NaN`; `allowPartial` verdadero y `n>=2` → **semilla = media simple de TODOS los valores disponibles**, no una EMA real |
+| `calcRSI` | **Wilder** (`avg=(avg·(period-1)+x)/period`) | `NaN` si `length < period+2`; `avgL===0` → `100` |
+| `calcMACD` | EMA clásica vía `emaArr` (sin `allowPartial`) para fast/slow/signal | `[NaN,NaN,NaN,NaN]` si faltan puntos válidos |
+| `calcATR` | Wilder | `NaN` si `length < period+2` |
+| `calcRVOL` | media simple de las 20 velas previas (sin la actual) | `NaN` si `length < 21` |
+| `calcADX` | Wilder (en la suma de TR/+DM/-DM y en el promediado final del ADX) | `{adx:NaN,...}` si `n < period*2`; `adx:NaN` pero `diPlus`/`diMinus` con valor si `dx.length < period` |
+| `calcCompression` | sin suavizado — rango simple de las últimas `n` velas | `NaN` si `length < n` |
+| `calcGapPct` | sin suavizado — % entre `open` de hoy y `close` de ayer | `NaN` si `length < 2` |
+| `calcVWAP` | sin suavizado — VWAP de las velas del mismo día **calendario UTC** que la última vela | `NaN` si no hay velas o volumen 0 |
+
+Alineación: todas devuelven el valor correspondiente a la **última**
+vela (`arr[arr.length-1]` o un escalar ya calculado sobre el tramo
+final) — sin desfase de índices entre las funciones ni respecto a como
+las consume `computeIndicators()`.
+
+**Dos hallazgos que cualquier puerto tiene que respetar, no "corregir":**
+
+1. **`ema200` nunca es una EMA de 200 períodos con los datos reales de
+   hoy.** `emaArr(closes,200,true)` solo entra en la rama normal si
+   `closes.length>=200`. Los `n` reales confirmados (Pregunta 7/§1.10
+   arriba) son **120/100/96** para 1d/1h/15m — los tres por debajo de
+   200, en los tres timeframes. Eso significa que `ema200` cae
+   **siempre** en la rama `allowPartial`: su valor real es la **media
+   simple de todos los cierres disponibles** (120, 100 o 96, según el
+   TF), no una EMA de verdad. Un puerto que implemente "EMA de 200"
+   literalmente de manera matemáticamente correcta, sin replicar este
+   fallback exacto, dará un número distinto en todos los casos reales
+   de hoy — no es un caso borde raro, es el camino normal.
+2. **Dos familias de suavizado distintas, no una.** `emaArr`/`calcMACD`
+   usan EMA clásica (`α=2/(n+1)`); `calcRSI`/`calcATR`/`calcADX` usan
+   **Wilder** (`α=1/n`, equivalente a `(prev·(n-1)+x)/n`). Reutilizar
+   una sola función de suavizado para las dos familias — el atajo más
+   tentador al portar — da un número sutilmente distinto en RSI/ATR/ADX
+   sin lanzar ningún error, exactamente el patrón que ya costó
+   `risk_pct`/`risk_per_share` y `atrMax`.
+
+`calcVWAP` agrupa por fecha de **calendario UTC** (`toISOString().slice(0,10)`),
+no por sesión de NYSE en hora local — señalado para que un puerto lo
+reproduzca tal cual, no lo "corrija" a hora de Nueva York sin que sea
+una decisión explícita aparte.
+
+**Fixtures reales para probar el puerto Python (04/10/2026):**
+`docs/pipeline/generar_fixtures_js.sh` extrae `computeIndicators` + las
+9 funciones de `/opt/axonik/scanner/index.html` (misma extracción por
+balance de llaves que `check_autocapture_triggers.sh`), las ejecuta con
+Node real (v24.15.0 confirmado en el servidor) sobre velas reales de
+`POST /api/scan-batch`, y escribe en `docs/pipeline/fixtures_js/`: las
+velas de entrada (congeladas), el JS exacto que se ejecutó (para
+inspección si algo no coincide) y la salida de `computeIndicators` más
+cada una de las 9 funciones por separado (para aislar cuál diverge, no
+solo que "algo no coincide"). NaN se serializa como el string `"NaN"`
+explícito, no como `null`.
+
+Probado en esta sesión contra un `index.html` sintético con el texto
+literal ya confirmado (Pregunta 9/10) y un servidor `scan-batch`
+sintético — extracción, validación de sintaxis JS y ejecución con Node
+funcionan de punta a punta. Confirmó además numéricamente, no solo
+leyendo el código, el hallazgo de `ema200`: con 120 cierres sintéticos,
+el último valor de `emaArr(closes,200,true)` coincidió exactamente con
+`mean(closes)` (152.06108333333336 en ambos casos).
+
+**Fixtures reales comitidos y puerto Python completo (04/10/2026,
+`docs/pipeline/fixtures_js/`, commit `4225c02`).**
+`services/snapshot-autocapture/indicator_calc.py`: las 9 funciones +
+`compute_indicators()`, 1:1 contra el texto literal, incluidas las dos
+convenciones de suavizado en implementaciones separadas (nunca
+compartiendo código entre EMA clásica y Wilder) y el fallback de
+`ema200` a media simple. **103 pruebas, todas pasan**, en
+`test_indicator_calc.py`: las 9 funciones + `compute_indicators()`
+contra las 9 combinaciones ticker×timeframe reales (AAPL/MSFT/NVDA ×
+1d/1h/15m, tolerancia relativa `1e-9`), más 4 pruebas deterministas
+independientes de los fixtures que protegen explícitamente los dos
+hallazgos de arriba (fallan si alguien "corrige" el fallback de
+`ema200`, si alguien intercambia Wilder por EMA clásica en RSI, o si
+alguien agrupa `calc_vwap` por hora local en vez de UTC).
+
+**Conectado con `evaluate_ticker_logic.py`:** `build_ind(data)` — el
+puente que faltaba entre el `"data"` en bruto de `scan_batch()`
+(`candles`/`periods`) y el `"ind"` que `evaluate_ticker()` siempre
+esperó, equivalente Python de lo que hacía `fetchNyseTicker()` en el
+navegador. Probado de punta a punta (`test_integration_build_ind.py`,
+9 pruebas) sobre los `data` reales de los 3 fixtures: `build_ind()` +
+`evaluate_ticker()` + `detect_auto_trigger()` corren sin excepciones
+sobre candles reales, con un shape de resultado coherente — **no** es
+todavía una comparación contra un resultado real del navegador, eso
+sigue pendiente (ver abajo).
+
+**Decisión de contrato (05/10/2026, del usuario): candles en bruto.**
+`POST /api/evaluate-ticker` recibe `candles` (el `data` tal cual lo
+devuelve `scan_batch()`) y calcula `ind` él mismo con `build_ind()` —
+un único camino de cálculo, nunca reimplementado ni en el endpoint ni
+en `snapshot_autocapture.py`. Se mantiene `ind` ya calculado como
+alternativa explícita, mutuamente excluyente con `candles` (422 si
+llegan los dos o ninguno — `resolve_ind()` en
+`evaluate_ticker_endpoint.py`).
+
+**Hallazgo al escribir las pruebas, no al razonar sobre ello: NaN no es
+JSON válido en ninguna dirección.** La primera versión de este
+documento (y del propio `evaluate_ticker_endpoint.py`) afirmaba, sin
+haberlo probado contra una app FastAPI real, que la `JSONResponse` por
+defecto de FastAPI servía `NaN` sin problema. **Era falso** — Starlette
+usa `allow_nan=False` y lanza `ValueError` al intentar servir un NaN
+(confirmado con fastapi 0.141.1 real y `TestClient`, no una suposición
+esta vez). Lo mismo pasa al RECIBIR un NaN crudo en el body (httpx lo
+rechaza igual). Solución: `evaluate_ticker_logic.nan_to_json_sentinel()`/
+`sentinel_to_nan()` — NaN se sirve y se envía como el string explícito
+`"NaN"` (mismo convenio que ya usaban los fixtures de Node), en las dos
+direcciones, con una única implementación compartida por el endpoint,
+`snapshot_autocapture.py` y las pruebas.
+
+**Dos problemas distintos, no uno — el registro los mezclaba y el
+usuario lo corrigió (05/10/2026):**
+1. El **NameError real de producción** (04/10/2026) fue
+   `Optional` sin importar en la cabecera de `market_data_proxy.py` —
+   un despliegue anterior pegó el bloque sin añadir
+   `from typing import Optional`, y `funda: Optional[dict] = None`
+   reventó en cuanto FastAPI construyó el modelo. Es un error de
+   despliegue (import que faltaba en el archivo real).
+2. **Problema distinto, de este repo**: `evaluate_ticker_endpoint.py`
+   tenía `@app.post(...)` como decorador de módulo con `app` sin
+   definir ni importar — al intentar `import evaluate_ticker_endpoint`
+   para escribir sus pruebas, Python fallaba antes de ejecutar nada
+   (aquí, al importar el archivo suelto, no en `market_data_proxy.py`).
+   Sin relación con el incidente de producción del punto 1.
+
+**Rediseñado para resolver el punto 2** sin tocar la causa del punto 1
+(ya cubierta por `deploy_evaluate_endpoint.sh`, que comprueba/añade los
+imports de forma mecánica): la función queda sin decorador en el repo;
+el decorador se añade al pegarlo en `market_data_proxy.py` (única
+pieza que de verdad pertenece solo al archivo real) — ahora lo hace el
+script, no a mano. Imports listados explícitamente en su
+docstring.
+
+**Probado contra una app FastAPI real** (`test_evaluate_ticker_endpoint.py`,
+9 pruebas): el endpoint con `candles` da exactamente el mismo resultado
+que `build_ind()` + `evaluate_ticker()` llamados directo; la ruta `ind`
+da lo mismo que la ruta `candles`; 422 si llegan los dos o ninguno; el
+NaN sobrevive el round-trip HTTP completo vía el sentinela. Total de la
+suite en `services/snapshot-autocapture/`: **131 pruebas, todas pasan**.
+
+**`VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` actualizada** al contrato de
+`candles`: el Paso B envía el `data` en bruto de `scan-batch`
+directamente; el Paso C, en el navegador, calcula `ind` con el propio
+`computeIndicators()` del navegador sobre esas mismas velas antes de
+llamar a `evaluateTicker()`, serializando con un replacer
+(`(k,v) => Number.isNaN(v) ? 'NaN' : v`) para que el NaN del navegador
+se compare con el `"NaN"` sentinela del endpoint, no con `null` —
+`JSON.stringify(NaN)` da `null` por defecto en JS, sin el replacer el
+diff del Paso D marcaría discrepancias falsas donde solo hay NaN.
+
+**`docs/pipeline/deploy_evaluate_endpoint.sh` (05/10/2026):** aplica el
+patch de forma idempotente en vez de los pasos manuales de antes —
+preflight de imports/módulos antes de tocar el proxy, backup con
+sha256, reemplazo del bloque sin duplicar la ruta, verificación de
+imports de cabecera, restart con rollback automático si no queda sano,
+y prueba de humo con AAPL real. Probado en esta sesión contra una app
+FastAPI real: instalación desde cero, reemplazo de un bloque viejo
+roto (simulando el incidente real del `NameError` de `Optional`), dos
+ejecuciones idempotentes seguidas sin duplicar la ruta, y el rollback
+forzado deliberadamente (restaura el backup exacto, sin diferencias).
+
+**Primer intento real contra el servidor: abortó correctamente, sin
+tocar nada — por una razón real que la sintética no cubría.** El
+marcador de cierre `# ─── Learning Engine` (a secas) aparece **dos
+veces** en `market_data_proxy.py` real: línea ~523 ("Learning Engine:
+Postgres access (signal_snapshots)") y línea ~1016 ("Learning Engine:
+signal_snapshots endpoints") — dos secciones legítimas distintas, no
+un error del archivo. El marcador se corrigió al texto completo y
+único `# ─── Learning Engine: signal_snapshots endpoints`, y se probó
+de nuevo contra una fixture que replica esa estructura exacta (dos
+cabeceras "Learning Engine" + `class EvaluateTickerRequest` en la
+posición real reportada por el usuario) — de punta a punta contra una
+app FastAPI real: ignora la cabecera de Postgres, usa solo la de
+`signal_snapshots endpoints` como límite, y reemplaza el bloque sin
+tocar `class SnapshotCreateRequest` que viene justo después. Además,
+abortos confirmados contra esta misma estructura realista: marcador de
+cierre duplicado, y `class EvaluateTickerRequest` apareciendo después
+del marcador de cierre (orden inesperado) — los dos sin modificar el
+archivo.
+
+**Lo que falta, explícitamente, antes de poder cerrar el paso 3:**
+1. Ejecutar `docs/pipeline/deploy_evaluate_endpoint.sh` contra el
+   servidor real (Paso 1b del README — código, contrato y script ya
+   confirmados y probados).
+2. Ejecutar `VERIFICACION_NAVEGADOR_VS_ENDPOINT.md` contra el servidor
+   real — la comparación real contra `evaluateTicker()` del navegador
+   sigue sin hacerse.
+3. Nada de esto se ha desplegado — instrucción explícita del usuario.
+
+**Matiz al punto 1 (04/10/2026): `scan-data` y `scan-batch` devuelven las
+mismas velas, solo cambia el envoltorio.** Se compararon respuestas reales
+de AAPL en ambos endpoints:
+
+| | `GET /api/scan-data` (`fetchNyseTicker`) | `POST /api/scan-batch` (`snapshot_autocapture.py`) |
+|---|---|---|
+| Ruta al bloque por TF | `data` | `results[0].data` |
+| Vela | `{t,o,h,l,c,v}` | `{t,o,h,l,c,v}` |
+| `t` | segundos epoch | segundos epoch |
+| Clave hermana de `candles` | `periods` | `periods` |
+| n en 1d / 1h / 15m | 120 / 100 / 96 | 120 / 100 / 96 |
+
+La primera y la última vela coinciden en los tres TF. **Decisión:
+`snapshot_autocapture.py` puede seguir usando `scan-batch`**. Que el
+endpoint sea distinto no explica ninguna divergencia con el navegador. El
+hueco real sigue siendo `computeIndicators()` (punto 2), no la fuente de
+velas.
+
+Alcance (no ampliar sin verificar): un solo ticker (AAPL); solo se
+compararon la primera vela, la última y n, **no vela a vela**; con el
+**mercado cerrado** (no se vio la vela parcial en sesión). Pendiente para
+cerrarlo del todo: diff completo de `data` en ≥2 tickers más, repetir con
+el mercado abierto y, con `scan-batch` multiticker, no fiarse de
+`results[0]`: emparejar cada resultado por su ticker.
+
+**Dos gaps adicionales, ya señalados, sin cambios por este paso:**
+de dónde salen `entry_price`/`stop_price`/`risk_per_share` para
+`construir_payload_snapshot()` (no están en el shape de
+`evaluate_ticker_logic.evaluate_ticker()`); y confirmar si la
+transformación de `fetchAllNyse`/`fetchAllCrypto` (una vez conocida)
+debe vivir en el endpoint nuevo o en `evaluate_ticker_logic.py` mismo.
+
+---
+
+## 2. Diseño del timer systemd (condicionado a confirmar 1.2)
+
+Mismo patrón que `axonik-snapshot-eval-daily`/`-intraday` (DOC-IDEM, Addendum 1,
+tabla de "Planificación"): una unit `.service` tipo `oneshot` que ejecuta un
+script Python, disparada por una unit `.timer`.
+
+### 2.1 Ventana operativa — regla dura, no una sugerencia
+
+Tu instrucción es explícita: nada fuera de 16:00–18:00 Madrid sin que lo
+decidas tú. Lo implemento con **dos capas independientes**, no solo una,
+porque un `OnCalendar` mal escrito o un `systemctl start` manual accidental
+no deben poder saltársela:
+
+1. **`OnCalendar` del timer**, acotado a la ventana (ver 2.3) — es la
+   defensa principal.
+2. **Guard dentro del propio script**: lo primero que hace, antes de tocar
+   la red, es comprobar la hora actual en `Europe/Madrid` y abortar sin
+   efecto (log + exit 0) si no está en `[16:00, 18:00)`. Así, si alguien
+   ejecuta `systemctl start axonik-snapshot-autocapture.service` a mano
+   fuera de la ventana (para probar, para depurar), no captura nada —
+   tiene que forzar el guard explícitamente con una variable de entorno
+   (p.ej. `AXONIK_FORCE_WINDOW=1`), lo cual es una decisión explícita y
+   queda en el log de systemd (`journalctl` registra el `Environment=`
+   efectivo de cada arranque manual).
+
+**Días:** lunes a viernes, igual que `axonik-snapshot-eval-intraday` — la
+ventana 16:00-18:00 Madrid está atada a la apertura de NYSE
+(`AXONIK_Master_Context_v1.md` §8), no a cripto. Esto significa que **esta
+automatización no captura señales de los scanners cripto** fuera de esa
+franja, aunque cripto opera 24/7 — es una limitación deliberada, coherente
+con "no captures fuera de esa ventana sin que yo lo decida explícitamente".
+Si quieres una ventana distinta (o sin ventana) para los scanners `SC-01`/
+`SC-02`, es una decisión tuya, aparte de este diseño — no la asumo.
+
+### 2.2 Cadencia
+
+El auto-refresh del navegador corre cada 15 min (`setAutoRefreshTimer`).
+Propongo la misma cadencia para no cambiar el comportamiento observado hasta
+ahora, ni inventar una frecuencia nueva sin motivo. Con el Hallazgo 1 de
+DOC-IDEM ya desplegado y verificado (`signal_hash` v2 sobre `data_ts`),
+repetir el escaneo varias veces sobre la misma vela ya no duplica nada en
+`signal_snapshots` — el proxy responde `created:false` a los repetidos sin
+escribir fila. La cadencia es ahora una cuestión de cuota de API
+(yfinance/Binance) y carga, no de integridad. **Ajustable, es un parámetro,
+no una restricción de diseño.**
+
+### 2.3 Unit de timer
+
+```ini
+# /etc/systemd/system/axonik-snapshot-autocapture.timer
+[Unit]
+Description=AXONIK - captura automática de snapshots (16:00-18:00 Madrid, L-V)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:00:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 16:15:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 16:30:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 16:45:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:00:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:15:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:30:00 Europe/Madrid
+OnCalendar=Mon..Fri *-*-* 17:45:00 Europe/Madrid
+AccuracySec=30s
+Persistent=false
+Unit=axonik-snapshot-autocapture.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Última corrida a las 17:45 (no a las 18:00) a propósito, para que ninguna
+ejecución pueda solaparse con el límite de la ventana. `Persistent=false`
+deliberado: si el host estuvo caído durante parte de la ventana, no hay que
+recuperar capturas retroactivas — el `runScan()` manual sigue existiendo
+como red de seguridad humana.
+
+### 2.4 Unit de servicio
+
+```ini
+# /etc/systemd/system/axonik-snapshot-autocapture.service
+[Unit]
+Description=AXONIK - captura automática de snapshots (reemplaza autoCaptureSnapshots del navegador)
+After=network.target axonik-market-proxy.service
+Requires=axonik-market-proxy.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/axonik/scripts
+EnvironmentFile=/etc/axonik/proxy_token.env
+ExecStart=/usr/bin/python3 /opt/axonik/scripts/snapshot_autocapture.py
+TimeoutStartSec=120
+```
+
+(`EnvironmentFile` es el token de autenticación de la sección 3 — mismo
+mecanismo de secretos que ya usáis para no meter credenciales en el propio
+script, coherente con cómo está tratado `credentials.json` en BACKLOG entrada
+3.)
+
+### 2.5 Script `snapshot_autocapture.py` — esqueleto original (superado)
+
+**Superado por la implementación real en
+`services/snapshot-autocapture/snapshot_autocapture.py` (§1.5).** Se deja
+este pseudocódigo original por trazabilidad de cómo evolucionó el diseño,
+no como referencia activa:
+
+```python
+#!/usr/bin/env python3
+"""
+Reemplaza autoCaptureSnapshots() del navegador. Ejecutado por
+axonik-snapshot-autocapture.timer, SOLO dentro de 16:00-18:00 Europe/Madrid
+(ver guard de ventana más abajo — no eliminar ni "simplificar" ese guard).
+"""
+PROXY_BASE = "http://127.0.0.1:8002"   # local al propio host, no via 0.0.0.0
+TOKEN = os.environ["AXONIK_PROXY_TOKEN"]  # ver sección 3
+
+def within_operating_window(now_madrid) -> bool:
+    return now_madrid.hour >= 16 and now_madrid.hour < 18  # [16:00, 18:00)
+
+def main():
+    now = datetime.now(ZoneInfo("Europe/Madrid"))
+    if not within_operating_window(now) and not os.environ.get("AXONIK_FORCE_WINDOW"):
+        log.info("Fuera de la ventana operativa 16:00-18:00 Madrid, no se captura nada.")
+        return
+
+    # CERRADO (§1.4): 02_SCANNERS, ESTADO IN ('EN_PRUEBAS', 'PRODUCCION').
+    # No localStorage, no estado de ningún navegador concreto.
+    universo = cargar_universo_de_scanners()
+
+    # PENDIENTE DE CONFIRMAR (§1.4): payload real de scan-batch.
+    datos_mercado = requests.post(f"{PROXY_BASE}/api/scan-batch",
+                                   json={"tickers": universo}, headers=auth_headers(TOKEN))
+
+    for ticker_data in datos_mercado.json()[...]:
+        # BLOQUEANTE REAL (§1.4): evaluate_ticker() calcula el score que
+        # detect_auto_trigger() compara — no inventar esa lógica aquí hasta
+        # confirmarla contra el código real.
+        score = evaluate_ticker(ticker_data)
+        if detect_auto_trigger(score):
+            resp = requests.post(f"{PROXY_BASE}/api/snapshots",
+                                  json=construir_payload(ticker_data),
+                                  headers=auth_headers(TOKEN))
+            if resp.json().get("created"):
+                log.info(f"capturado {ticker_data['ticker']}")
+            # created:false ya queda registrado por el propio proxy
+            # ("snapshot duplicado suprimido", Hallazgo 1) — no duplicar ese log aquí.
+```
+
+No incluyo la lógica real de `detect_auto_trigger` ni de `construir_payload`
+porque son exactamente los puntos de 1.2 sin confirmar — escribirlos ahora
+sería inventar comportamiento, no portarlo.
+
+---
+
+## 3. Hallazgo 2 del backlog: prioridad subida a ALTA + diseño de autenticación
+
+### 3.1 Prioridad
+
+`BACKLOG.md`, entrada 2 ("Puerto 8002 sin autenticación y con CORS abierto"):
+**[BAJA] → [ALTA]**, aplicado en este mismo commit. Motivo explícito, tal
+como pediste: este diseño añade un proceso automático nuevo que habla con ese
+endpoint sin supervisión humana en cada llamada — no tiene sentido construir
+más automatización sobre un endpoint que hoy solo está protegido por el
+firewall.
+
+### 3.2 Por qué un token resuelve la mitad del problema, no todo
+
+El endpoint lo usan dos clientes con amenazas distintas:
+
+| Cliente | Amenaza real hoy | ¿Un token estático la resuelve? |
+|---|---|---|
+| El nuevo proceso de captura (máquina a máquina, mismo host) | Ninguna especial — ya corre en `127.0.0.1`, no necesita exponerse a la red en absoluto | Sí, trivialmente, y además puede no exponerse: ver 3.4 |
+| El navegador en `/scanner` (humano, posiblemente remoto) | Bots automatizados de internet (lo observado: 53 peticiones, 100% sondeos, 0 intentos de escritura) | **Parcialmente.** Un token embebido en HTML/JS servido al navegador es visible para cualquiera que mire el código fuente de la página — no es secreto frente a un atacante que mire, solo frente a un escáner automatizado ciego que no inspecciona el cuerpo de la respuesta. Es exactamente la amenaza observada hasta ahora, así que **vale la pena igualmente**, pero no hay que presentarlo como autenticación real frente a alguien dirigido. |
+
+### 3.3 Diseño mínimo: bearer token en los endpoints de escritura
+
+```python
+# market_data_proxy.py
+API_TOKEN = Path("/etc/axonik/proxy_token.env").read_text().strip()  # o os.environ, 600, solo root
+
+async def require_token(authorization: str = Header(None)):
+    if authorization != f"Bearer {API_TOKEN}":
+        raise HTTPException(status_code=401, detail="token inválido o ausente")
+
+@app.post("/api/snapshots", dependencies=[Depends(require_token)])
+...
+# Igual en PUT .../close, DELETE .../{id}, POST /api/circuit-breaker/breach,
+# POST /api/scan-batch, POST /api/fundamentals-batch.
+# GET /api/snapshots (lectura) y GET /api/health quedan sin token —
+# no hay nada que proteger en una lectura pública de estado agregado,
+# y el health check lo necesitan los propios timers systemd sin credenciales.
+```
+
+CORS: cambiar `allow_origins=["*"]` al origen real desde el que se sirve
+`/scanner` (o eliminarlo si nadie llama al proxy desde un origen distinto al
+propio host — a confirmar contigo, no lo puedo saber sin ver cómo accedes al
+scanner hoy).
+
+### 3.4 Diseño preferido: que el proxy deje de necesitar exponerse en absoluto
+
+Esta automatización cambia el panorama: si el nuevo proceso headless cubre la
+captura automática, la única razón que queda para que alguien llegue a
+`/scanner` desde fuera del propio host es el uso manual ocasional (botón
+"Seguir", supervisión visual). Dos piezas, independientes entre sí:
+
+1. **Bind a `127.0.0.1:8002`** en vez de `0.0.0.0:8002` — el proceso de
+   captura headless corre en el mismo host, no necesita red. Esto es lo que
+   BACKLOG entrada 2 ya sugiere como opción ("valorar el bind a 127.0.0.1 si
+   nada externo lo necesita").
+2. **Si todavía necesitas `/scanner` desde fuera** para uso manual: un túnel
+   SSH (`ssh -L 8002:localhost:8002 ...`) o un reverse proxy con su propia
+   autenticación (nginx + basic auth, o detrás del mismo Cloudflare tunnel
+   que ya usáis para n8n) — nunca el puerto crudo en `0.0.0.0` otra vez.
+
+Con (1), el token de 3.3 deja de ser necesario para el tráfico
+máquina-a-máquina (ya no atraviesa red pública) y solo protege el acceso
+manual vía túnel/reverse-proxy, donde además es mucho más difícil de
+inspeccionar que en HTML servido a cualquiera. **Es la opción que recomiendo**,
+pero cambia cómo accedes tú al scanner día a día, así que la dejo como
+decisión tuya, no como parte automática de este diseño.
+
+### 3.5 Verificación (antes de dar esto por cerrado, mismo estándar que DOC-IDEM)
+
+- Petición sin `Authorization` a cada endpoint de escritura → `401`.
+- Petición con token correcto → comportamiento normal, sin cambios de
+  respuesta más allá del código 200/201 esperado.
+- El script de captura (sección 2) funciona con el token puesto en su
+  `EnvironmentFile`.
+- Si se aplica 3.4: `curl` desde fuera del host a `:8002` → connection
+  refused (no hay bind en esa interfaz, no hace falta ni firewall).
+- Si se mantiene `/scanner` accesible por túnel/reverse-proxy: confirmar que
+  el flujo manual ("Seguir") sigue funcionando end-to-end.
+
+---
+
+## 4. Dependencias y orden recomendado (actualizado tras §1.5-1.6)
+
+El bloqueante de Playwright (antes punto 1 de esta lista) **está cerrado**.
+No instalar el timer (`services/snapshot-autocapture/axonik-snapshot-autocapture.timer`)
+antes de:
+
+1. **Cerrar los 3 puntos de §1.5** (shape de `scan-batch`, nombres de
+   campo de `/api/snapshots`, umbral de `detectAutoTrigger`) con la
+   Pregunta 4 de `check_autocapture_triggers.sh`.
+2. **Aplicar el bind a 127.0.0.1 (§1.6)** — tu propia instrucción: no más
+   automatización sobre un endpoint abierto. Patch y verificación en
+   `services/snapshot-autocapture/README.md`.
+3. **El protocolo de verificación del README** (`--dry-run`, luego una
+   corrida real con `--force-window` fuera de la franja de los timers del
+   evaluador) — mismo estándar que el hallazgo 1 de DOC-IDEM.
+
+Los tres son pasos de otra sesión con acceso al Hetzner (no de esta) — el
+código y el README son la especificación que esa sesión debe seguir, igual
+que DOC-IDEM lo fue para el hallazgo 1.
+
+## 5. Qué NO toca este diseño ni la implementación
+
+- `scripts/validation_engine/` y los Gates (Fase 0B) — sin relación.
+- Los hallazgos 1, 3 y 4 de BACKLOG (timers simultáneos, control de
+  versiones de `/opt/axonik/scripts/`, `sync_to_sheet()` no idempotente) —
+  siguen abiertos, sin cambios aquí.
+- El botón manual "Seguir" — sigue siendo una acción humana deliberada, no
+  se automatiza.
+- Nada en producción: este repositorio solo contiene el código listo para
+  desplegar y el README con los pasos — nadie lo ha aplicado todavía en el
+  Hetzner.

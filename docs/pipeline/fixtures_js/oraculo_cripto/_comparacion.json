@@ -1,0 +1,17 @@
+{
+  "BTC": {
+    "diffs": [],
+    "trigger_diffs": [],
+    "pasa": true
+  },
+  "ETH": {
+    "diffs": [],
+    "trigger_diffs": [],
+    "pasa": true
+  },
+  "SOL": {
+    "diffs": [],
+    "trigger_diffs": [],
+    "pasa": true
+  }
+}
